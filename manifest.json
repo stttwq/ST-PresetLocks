@@ -1,0 +1,13 @@
+{
+    "display_name": "预设锁定",
+    "loading_order": 70,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "author": "aikohanasaki（原版）· 中文精简版",
+    "version": "1.1.0",
+    "license": "AGPL-3.0",
+    "homePage": "https://github.com/aikohanasaki/SillyTavern-CharacterLocks",
+    "auto_update": false,
+    "description": "按角色卡记住预设：同一张卡的所有聊天共用一个预设，切换角色时自动换回。中文精简版，基于 Character Locks v4.0.0，只保留角色卡级锁定。"
+}
