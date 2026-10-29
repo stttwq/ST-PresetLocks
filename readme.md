@@ -56,10 +56,24 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 ## 性能
 
-- 角色面板关着时：**零请求**，巡检直接 return
-- 面板开着时：世界书列表 60 秒最多重拉一次（新增/删除世界书靠 `WORLDINFO_UPDATED` 事件立即刷新，不等缓存）
-- DOM 按签名对比，内容没变不重建
-- 切卡/换聊天时才做一次角色世界书同步，且值没变不落盘
+实测数据（浏览器内编号计数，不是估算）：
+
+| 场景 | 20 秒内 DOM 查找 | 请求 |
+| --- | --- | --- |
+| 角色面板关着 | **0** | 0 |
+| 角色面板开着 | 70（≈70 次/20s） | 0（列表 60 秒缓存） |
+| 标签页在后台 | 0 | 0 |
+
+怎么做到的：
+
+- 用 MutationObserver 盯面板的 class，面板一关就 `clearInterval`，没有空转定时器
+- 巡检 2 秒一次，但内容签名没变就不碰 DOM；列表 60 秒才重拉一次，新增/删除靠 `WORLDINFO_UPDATED` 事件立即刷
+- `world-info.js` 只动态 import 一次（之前每次同步都 import）
+- `document.hidden` 为真时直接 return
+
+## 排查版本
+
+两行标题后面会显示版本号（如 `v1.6.0`）。看不到就是浏览器还在用旧文件，`Ctrl+Shift+R` 硬刷新，或在 DevTools 里勾上 Disable cache 再刷。
 
 ### 删卡连带删世界书
 
