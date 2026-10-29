@@ -15,6 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
+const VERSION = '1.6.0'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -248,6 +249,20 @@ async function writeCardWorlds(avatar, list) {
     return true;
 }
 
+let wiModulePromise = null;
+
+/** 动态 import 只做一次：每轮扫描都重新 import 会白跑一趟模块解析。 */
+async function getWorldInfoModule() {
+    if (!wiModulePromise) {
+        wiModulePromise = import('../../../world-info.js').catch((error) => {
+            console.warn(`${LOG} 加载 world-info 模块失败:`, error);
+            wiModulePromise = null;
+            return null;
+        });
+    }
+    return wiModulePromise;
+}
+
 /** 在某个 store 上登记录角色的额外世界书，返回是否真改动了。 */
 function upsertCharLore(store, base, extra) {
     if (!store || typeof store !== 'object') return false;
@@ -281,8 +296,8 @@ async function syncCharLore(avatar, list) {
 
     let changed = false;
     try {
-        const wi = await import('../../../world-info.js');
-        if (upsertCharLore(wi.world_info, base, extra)) changed = true;
+        const wi = await getWorldInfoModule();
+        if (wi && upsertCharLore(wi.world_info, base, extra)) changed = true;
     } catch (error) {
         console.warn(`${LOG} 写酒馆内存里的角色世界书失败:`, error);
     }
@@ -315,8 +330,8 @@ async function deleteWorld(worldName) {
 async function refreshStWorldList() {
     worldListCache = null;
     try {
-        const wi = await import('../../../world-info.js');
-        if (typeof wi.updateWorldInfoList === 'function') await wi.updateWorldInfoList();
+        const wi = await getWorldInfoModule();
+        if (typeof wi?.updateWorldInfoList === 'function') await wi.updateWorldInfoList();
     } catch (error) {
         console.warn(`${LOG} 刷新酒馆世界书列表失败:`, error);
     }
@@ -519,6 +534,7 @@ function injectEditorRow() {
     row.innerHTML = `
         <div class="title_restorable">
             <span>🔒 预设锁定</span>
+            <span class="opacity50p font70p" style="margin-left:6px">v${VERSION}</span>
             <span id="preset_locks_hint" class="opacity50p font70p"></span>
         </div>
         <select id="preset_locks_select" class="text_pole wide100p"></select>`;
@@ -530,6 +546,7 @@ function injectEditorRow() {
     worldRow.innerHTML = `
         <div class="title_restorable">
             <span>🌍 世界书锁定（可多选）</span>
+            <span class="opacity50p font70p" style="margin-left:6px">v${VERSION}</span>
             <span id="world_lock_hint" class="opacity50p font70p"></span>
         </div>
         <div id="world_lock_list" class="flex gap1 flexFlowColumn wide100p" style="max-height:200px;overflow:auto;"></div>`;
@@ -644,7 +661,6 @@ async function onWorldToggle(event) {
 }
 
 let editorTimer = null;
-
 /** 角色面板是否真的开着。只看 DOM 存在不够，面板关着时行也还在。 */
 function panelOpen() {
     const panel = document.getElementById('right-nav-panel');
@@ -653,32 +669,66 @@ function panelOpen() {
     return !!(row && row.offsetParent);
 }
 
+let panelObserver = null;
+let lastPanelOpen = null;
+
 /**
- * 刷新节奏：面板没开就完全不干活；开着时 2 秒巡检一次（内容有 diff 才重建 DOM）。
- * 另外挿入点被酒馆重绘时（换卡、导入）额外触发一次。
+ * 性能：不在面板关着时空转。面板一开就刷一次并开巡检；面板一关就彻底停掉定时器。
+ * 用 MutationObserver 盯面板的 class，不靠轮询。
  */
 function startEditorWatch() {
-    if (editorTimer) return;
+    const panel = document.getElementById('right-nav-panel');
+    if (!panel) return false;
+    if (panelObserver) return true;
 
-    document.addEventListener(
+    panel.addEventListener(
         'click',
         (event) => {
             const target = event.target instanceof Element ? event.target.closest('.character_select') : null;
             if (!target) return;
-            setTimeout(() => {
-                refreshEditorRow();
-                refreshWorldRow();
-            }, 500);
+            setTimeout(refreshEditorRow, 300);
+            setTimeout(refreshWorldRow, 500);
         },
         true,
     );
 
+    lastPanelOpen = panel.classList.contains('openDrawer');
+    panelObserver = new MutationObserver(() => {
+        const open = panel.classList.contains('openDrawer');
+        if (open === lastPanelOpen) return;
+        lastPanelOpen = open;
+        if (open) {
+            refreshEditorRow(true);
+            refreshWorldRow(true);
+            startTicker();
+        } else {
+            stopTicker();
+        }
+    });
+    panelObserver.observe(panel, { attributes: true, attributeFilter: ['class'] });
+
+    if (lastPanelOpen) startTicker();
+    return true;
+}
+
+/** 只在面板开着的时候跑：2 秒一次，内容没变不碰 DOM，不拉请求。 */
+function startTicker() {
+    if (editorTimer) return;
     editorTimer = setInterval(() => {
-        if (!document.getElementById('preset_locks_row')) return;
-        if (!panelOpen()) return;
+        if (document.hidden) return; // 后台标签页不干活
+        if (!panelOpen()) {
+            stopTicker();
+            return;
+        }
         refreshEditorRow();
         refreshWorldRow();
     }, 2000);
+}
+
+function stopTicker() {
+    if (!editorTimer) return;
+    clearInterval(editorTimer);
+    editorTimer = null;
 }
 
 function refreshEditorRow(force = false) {
@@ -887,17 +937,20 @@ function injectMenuItem() {
 }
 
 function init() {
+    console.log(`${LOG} v${VERSION} 已加载`);
     settings();
     migrateByName();
     injectMenuItem();
     injectEditorRow();
+    startEditorWatch();
 
-    // 酒馆的菜单是懒渲染的，注入失败时重试几次
+    // 酒馆的菜单是懒渲染的，注入失败时重试几次（同时等角色面板出现）
     let tries = 0;
     const timer = setInterval(() => {
         const menuOk = injectMenuItem();
         const rowOk = injectEditorRow();
-        if ((menuOk && rowOk) || ++tries > 20) clearInterval(timer);
+        const watchOk = startEditorWatch();
+        if ((menuOk && rowOk && watchOk) || ++tries > 40) clearInterval(timer);
     }, 500);
 
     eventSource.on(event_types.CHAT_CHANGED, () => { refreshEditorRow(); refreshWorldRow(); onContextChanged(); });

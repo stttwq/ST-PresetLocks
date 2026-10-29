@@ -274,6 +274,11 @@ ok('upsertCharLore 能分别写两份 store', pl.upsertCharLore(storeA, 'c', ['W
 ok('upsertCharLore 重复写返回 false（不触发落盘）', pl.upsertCharLore(storeA, 'c', ['W2']) === false);
 ok('upsertCharLore 传空数组就删条目', pl.upsertCharLore(storeA, 'c', []) === true && storeA.charLore.length === 0);
 
+// 版本号必须和 manifest 一致，否则浏览器缓存/部署错位时无从判断
+import { readFileSync } from 'node:fs';
+const manifestVersion = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')).version;
+ok('index.js 内的 VERSION 与 manifest 一致', pl.VERSION === manifestVersion, `code=${pl.VERSION} manifest=${manifestVersion}`);
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
