@@ -16,11 +16,13 @@ import { getPresetManager } from '../../../preset-manager.js';
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
 const CARD_KEY = 'presetLocks';
+const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world
 const AUTO = { NEVER: 'never', ASK: 'ask', ALWAYS: 'always' };
 
 const DEFAULTS = {
     autoApply: AUTO.ALWAYS,
     notify: true,
+    deleteWorldWithCard: true,
 };
 
 let popupInstance = null;
@@ -88,7 +90,11 @@ function findChar(avatar) {
 function panelCard() {
     const el = document.getElementById('avatar_url_pole');
     const avatar = el && el.value ? el.value.trim() : '';
-    if (!avatar) return null;
+    if (!avatar) {
+        // 面板还没填好时（刚打开列表/刚切角色），退回当前加载的那张卡
+        const c = currentChar();
+        return c ? { avatar: c.avatar, name: c.name } : null;
+    }
     const namePole = document.getElementById('character_name_pole');
     const ch = findChar(avatar);
     const name = ch?.name || (namePole && namePole.value ? namePole.value.trim() : avatar);
@@ -176,6 +182,146 @@ function migrateByName() {
     }
     if (moved) saveSettings();
     return moved;
+}
+
+// ===== 世界书绑定（酒馆原生字段 data.extensions.world） =====
+
+let worldListCache = null;
+let worldListAt = 0;
+
+/** /api/worldinfo/list 的 file_id 才是酒馆内部用的名字（data.extensions.world 存的就是它）。 */
+async function fetchWorldList(force = false) {
+    const now = Date.now();
+    if (!force && worldListCache && now - worldListAt < 30000) return worldListCache;
+    try {
+        const res = await fetch('/api/worldinfo/list', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: '{}',
+        });
+        if (!res.ok) return worldListCache || [];
+        const list = await res.json();
+        worldListCache = (Array.isArray(list) ? list : []).map((x) => ({
+            file_id: x.file_id || x.name,
+            name: x.name || x.file_id,
+        }));
+        worldListAt = now;
+        return worldListCache;
+    } catch (error) {
+        console.warn(`${LOG} 取世界书列表失败:`, error);
+        return worldListCache || [];
+    }
+}
+
+function getWorld(avatar) {
+    const w = findChar(avatar)?.data?.extensions?.[WORLD_KEY];
+    return typeof w === 'string' ? w : '';
+}
+
+async function writeCardWorld(avatar, worldName) {
+    const res = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar, data: { extensions: { [WORLD_KEY]: worldName || null } } }),
+    });
+    if (!res.ok) return false;
+    const ch = findChar(avatar);
+    if (ch) {
+        if (!ch.data || typeof ch.data !== 'object') ch.data = {};
+        if (!ch.data.extensions || typeof ch.data.extensions !== 'object') ch.data.extensions = {};
+        ch.data.extensions[WORLD_KEY] = worldName || null;
+    }
+    return true;
+}
+
+/** 还有哪些卡在指向同一个世界书（排除要删的那张）。 */
+function worldRefs(worldName, excludeAvatar) {
+    if (!worldName) return [];
+    const chars = getContext()?.characters || [];
+    return chars.filter((c) => c && c.avatar !== excludeAvatar && c.data?.extensions?.[WORLD_KEY] === worldName);
+}
+
+async function deleteWorld(worldName) {
+    const res = await fetch('/api/worldinfo/delete', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ name: worldName }),
+    });
+    return res.ok;
+}
+
+/** 删卡前先问：这张卡绑定的世界书要不要一并删。此时卡还在，弹窗不会被酒馆重渲染冲掉。 */
+async function decideWorldDelete(avatar) {
+    if (!settings().module.deleteWorldWithCard) return null;
+
+    const ch = findChar(avatar);
+    const world = ch?.data?.extensions?.[WORLD_KEY];
+    if (!ch || !world) return null;
+
+    const refs = worldRefs(world, avatar);
+    if (refs.length) {
+        toast(`世界书「${world}」还被 ${refs.length} 张卡使用，已保留`, 'info');
+        return null;
+    }
+
+    if (!worldListCache || !worldListCache.some((w) => w.file_id === world)) await fetchWorldList(true);
+    if (!worldListCache?.some((w) => w.file_id === world)) return null; // 文件早就不在了
+
+    const ok = await callGenericPopup(
+        `<div class="flex gap1 flexFlowColumn">
+            <div>角色卡「${ch.name || avatar}」绑定了世界书：</div>
+            <div><b>${world}</b></div>
+            <div>删除角色卡时一并删除它吗？</div>
+            <div class="opacity50p font70p">选「一并删除」会从服务器移除这个文件，不可撤销。</div>
+         </div>`,
+        POPUP_TYPE.CONFIRM,
+        '顺便删除世界书？',
+        { okButton: '一并删除', cancelButton: '只删角色卡' },
+    );
+    return ok === POPUP_RESULT.AFFIRMATIVE ? world : null;
+}
+
+/** 待删除的世界书，key 是角色卡 avatar；删卡动作完成后再执行。 */
+const pendingWorldDelete = new Map();
+
+/** 拦在酒馆发删卡请求之前：先问，再放行。 */
+function installDeleteHook() {
+    if (window.__presetLocksFetchWrapped) return;
+    window.__presetLocksFetchWrapped = true;
+
+    const original = window.fetch;
+    window.fetch = async function (input, init) {
+        try {
+            const url = typeof input === 'string' ? input : input?.url || '';
+            const method = (init?.method || 'GET').toUpperCase();
+            if (method === 'POST' && url.includes('/api/characters/delete') && typeof init?.body === 'string') {
+                const avatar = JSON.parse(init.body || '{}')?.avatar_url;
+                if (avatar) {
+                    const world = await decideWorldDelete(avatar);
+                    if (world) pendingWorldDelete.set(avatar, world);
+                }
+            }
+        } catch (error) {
+            console.error(`${LOG} 删卡前检查世界书失败:`, error);
+        }
+        return original.call(this, input, init);
+    };
+}
+
+/** 酒馆删卡成功后发 CHARACTER_DELETED，这里把之前确认过的世界书删掉。 */
+async function onCharacterDeleted(payload) {
+    const character = payload?.character;
+    const avatar = character?.avatar;
+    const world = avatar ? pendingWorldDelete.get(avatar) : null;
+    if (!avatar || !world) return;
+    pendingWorldDelete.delete(avatar);
+
+    if (await deleteWorld(world)) {
+        worldListCache = null;
+        toast(`已删除世界书「${world}」`);
+    } else {
+        toastr.error(`删除世界书「${world}」失败`, '预设锁定');
+    }
 }
 
 // ===== 应用预设 =====
@@ -289,13 +435,86 @@ function injectEditorRow() {
         <select id="preset_locks_select" class="text_pole wide100p"></select>`;
     anchor.parentElement.insertBefore(row, anchor);
 
+    const worldRow = document.createElement('div');
+    worldRow.id = 'preset_locks_world_row';
+    worldRow.className = 'flex-container flexFlowColumn';
+    worldRow.innerHTML = `
+        <div class="title_restorable">
+            <span>🌍 世界书锁定</span>
+            <span id="world_lock_hint" class="opacity50p font70p"></span>
+        </div>
+        <select id="world_lock_select" class="text_pole wide100p"></select>`;
+    anchor.parentElement.insertBefore(worldRow, anchor);
+
+    const wsel = worldRow.querySelector('#world_lock_select');
+    wsel.addEventListener('pointerdown', () => refreshWorldRow());
+    wsel.addEventListener('focus', () => refreshWorldRow());
+    wsel.addEventListener('change', () => onWorldChange());
+
     const sel = row.querySelector('#preset_locks_select');
     sel.addEventListener('pointerdown', () => refreshEditorRow());
     sel.addEventListener('focus', () => refreshEditorRow());
     sel.addEventListener('change', () => onEditorChange());
     refreshEditorRow(true);
+    refreshWorldRow(true);
     startEditorWatch();
     return true;
+}
+
+async function refreshWorldRow(force = false) {
+    const sel = document.getElementById('world_lock_select');
+    if (!sel) return;
+
+    const card = panelCard();
+    const key = card?.avatar || '';
+    const bound = getWorld(key);
+    const list = await fetchWorldList(force);
+    const ids = list.map((w) => w.file_id);
+
+    const shown = Array.from(sel.options || []).map((o) => o.value);
+    const needRebuild = force || sel.dataset.avatar !== key || shown.length - 1 !== ids.length || !shown.includes(bound);
+    if (needRebuild) {
+        sel.replaceChildren(new Option('（不绑定世界书）', ''));
+        for (const w of list) sel.append(new Option(w.name, w.file_id, false, w.file_id === bound));
+        if (bound && !ids.includes(bound)) sel.append(new Option(`${bound}（文件缺失）`, bound, false, true));
+        sel.value = bound;
+        sel.dataset.avatar = key;
+        sel.dataset.bound = bound;
+    }
+    sel.disabled = false;
+
+    const hint = document.getElementById('world_lock_hint');
+    if (hint) {
+        const refs = bound ? worldRefs(bound, key).length : 0;
+        hint.textContent = !key
+            ? '先在左侧选中一张角色卡'
+            : !bound
+                ? '选一本世界书，它会随卡自动生效，删卡时可连带删除'
+                : refs
+                    ? `绑定中 · 另有 ${refs} 张卡共用，删卡时保留`
+                    : '绑定中 · 删卡时会一并删除';
+    }
+}
+
+async function onWorldChange() {
+    const sel = document.getElementById('world_lock_select');
+    if (!sel) return;
+    const avatar = sel.dataset.avatar;
+    if (!avatar) {
+        sel.value = '';
+        toast('先在左侧选中一张角色卡', 'info');
+        return;
+    }
+    const world = sel.value;
+    if (world === sel.dataset.bound) return;
+
+    const ok = await writeCardWorld(avatar, world);
+    if (!ok) {
+        toastr.error('写不进角色卡，世界书绑定失败', '预设锁定');
+    } else {
+        toast(world ? `角色卡已绑定世界书「${world}」` : '已解除世界书绑定');
+    }
+    refreshWorldRow(true);
 }
 
 let editorTimer = null;
@@ -304,9 +523,9 @@ let editorTimer = null;
 function startEditorWatch() {
     if (editorTimer) return;
     editorTimer = setInterval(() => {
-        const row = document.getElementById('preset_locks_row');
-        if (!row || !row.offsetParent) return; // 面板没开就不干活
+        if (!document.getElementById('preset_locks_row')) return;
         refreshEditorRow();
+        refreshWorldRow();
     }, 500);
 }
 
@@ -419,6 +638,7 @@ function panelHtml(key, name) {
         </div>
 
         <label><input type="checkbox" id="pl-notify" ${s.notify ? 'checked' : ''}> 显示提示</label>
+        <label><input type="checkbox" id="pl-delete-world" ${s.deleteWorldWithCard ? 'checked' : ''}> 删角色卡时，一并删除它绑定的世界书</label>
 
         <div class="opacity50p font70p">
             绑定不在这里设。去<b>角色卡管理界面</b>（左上角 ☰），在标签下方新增的「🔒 预设锁定」下拉里直接选预设。
@@ -436,6 +656,9 @@ function bindPanel() {
 
     const notify = dlg.querySelector('#pl-notify');
     if (notify) notify.addEventListener('change', () => { s.notify = notify.checked; saveSettings(); });
+
+    const delWorld = dlg.querySelector('#pl-delete-world');
+    if (delWorld) delWorld.addEventListener('change', () => { s.deleteWorldWithCard = delWorld.checked; saveSettings(); });
 
     dlg.querySelectorAll('input[name="pl-auto"]').forEach((el) => {
         el.addEventListener('change', () => {
@@ -525,8 +748,10 @@ function init() {
         if ((menuOk && rowOk) || ++tries > 20) clearInterval(timer);
     }, 500);
 
-    eventSource.on(event_types.CHAT_CHANGED, () => { refreshEditorRow(); onContextChanged(); });
+    eventSource.on(event_types.CHAT_CHANGED, () => { refreshEditorRow(); refreshWorldRow(); onContextChanged(); });
     if (event_types.CHAT_LOADED) eventSource.on(event_types.CHAT_LOADED, () => onContextChanged());
+    if (event_types.CHARACTER_DELETED) eventSource.on(event_types.CHARACTER_DELETED, onCharacterDeleted);
+    installDeleteHook();
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次
     onContextChanged();

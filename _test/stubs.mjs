@@ -7,6 +7,9 @@ export const state = {
     handlers: {},
     fetchOk: true,
     fetchCalls: [],
+    worlds: ['W1', 'W2'],
+    popupAnswers: [],
+    popupCalls: [],
 };
 
 export const extension_settings = {};
@@ -21,6 +24,7 @@ export const event_types = {
     APP_READY: 'app_ready',
     CHAT_CHANGED: 'chat_changed',
     CHAT_LOADED: 'chat_loaded',
+    CHARACTER_DELETED: 'character_deleted',
 };
 
 export const saveSettingsDebounced = () => {};
@@ -59,8 +63,11 @@ export class Popup {
 }
 
 export const POPUP_TYPE = { TEXT: 'text', CONFIRM: 'confirm' };
-export const POPUP_RESULT = { AFFIRMATIVE: 1 };
-export const callGenericPopup = async () => POPUP_RESULT.AFFIRMATIVE;
+export const POPUP_RESULT = { AFFIRMATIVE: 1, CANCELLED: 0 };
+export const callGenericPopup = async (html, type, title) => {
+    state.popupCalls.push({ html, type, title });
+    return state.popupAnswers.length ? state.popupAnswers.shift() : POPUP_RESULT.CANCELLED;
+};
 
 // 模拟服务端 /api/characters/merge-attributes：只做深合并到角色卡的 data 上
 class FakeOption {
@@ -112,8 +119,19 @@ globalThis.document = {
 };
 
 globalThis.fetch = async (url, opts) => {
-    const body = JSON.parse(opts.body);
+    const body = opts && opts.body ? JSON.parse(opts.body) : null;
     state.fetchCalls.push({ url, body });
+
+    if (url === '/api/worldinfo/list') {
+        return { ok: true, status: 200, json: async () => state.worlds.map((w) => ({ file_id: w, name: w })) };
+    }
+    if (url === '/api/worldinfo/delete') {
+        if (!state.fetchOk) return { ok: false, status: 500 };
+        state.worlds = state.worlds.filter((w) => w !== body.name);
+        return { ok: true, status: 200 };
+    }
+
+    // 模拟 /api/characters/merge-attributes：只做深合并到角色卡的 data 上
     if (!state.fetchOk) return { ok: false, status: 403 };
     const ch = state.ctx.characters.find((c) => c.avatar === body.avatar);
     if (ch) {

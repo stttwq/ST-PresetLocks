@@ -172,6 +172,75 @@ await pl.onContextChanged();
 ok('characterId 为字符串时照样自动切', state.selected === 'B', `selected=${state.selected} characterId=${state.ctx.characterId}`);
 use(0, 'chat-a');
 
+// ===== 世界书绑定 =====
+const wsel = makeFakeSelect();
+dom.els['world_lock_select'] = wsel;
+dom.els['world_lock_hint'] = { textContent: '' };
+
+dom.els['avatar_url_pole'].value = 'alice.png';
+await pl.refreshWorldRow(true);
+ok('世界书下拉列出服务器上的世界书', wsel.children.map((o) => o.value).join(',') === ',W1,W2', wsel.children.map((o) => o.value).join(','));
+ok('未绑定时下拉停在「不绑定」', wsel.value === '' && wsel.disabled === false);
+
+wsel.value = 'W1';
+await pl.onWorldChange();
+ok('选世界书 → 写进卡内 data.extensions.world', alice().data.extensions.world === 'W1', JSON.stringify(alice().data.extensions));
+
+await pl.refreshWorldRow(true);
+ok('重新渲染后选中已绑定的 W1', wsel.value === 'W1' && wsel.dataset.bound === 'W1');
+
+wsel.value = '';
+await pl.onWorldChange();
+ok('选「不绑定」→ 卡内写 null', alice().data.extensions.world === null, JSON.stringify(alice().data.extensions));
+
+// 删卡连带删世界书（先问，再删）
+await pl.writeCardWorld('alice.png', 'W1');
+state.worlds = ['W1', 'W2'];
+state.popupCalls.length = 0;
+state.popupAnswers = [1];
+let decided = await pl.decideWorldDelete('alice.png');
+ok('删卡前先问一次', state.popupCalls.length === 1 && state.popupCalls[0].html.includes('W1'), `popups=${state.popupCalls.length}`);
+ok('确认后返回待删的世界书', decided === 'W1', `decided=${decided}`);
+pl.pendingWorldDelete.set('alice.png', decided);
+await pl.onCharacterDeleted({ id: 0, character: alice() });
+ok('删卡完成后真的删掉世界书文件', !state.worlds.includes('W1'), `worlds=${state.worlds.join(',')}`);
+ok('删完清空待删队列', !pl.pendingWorldDelete.has('alice.png'));
+
+// 共用同一个世界书 → 不问也不删
+state.worlds = ['W1', 'W2'];
+await pl.writeCardWorld('alice.png', 'W1');
+await pl.writeCardWorld('bob.png', 'W1');
+state.popupCalls.length = 0;
+decided = await pl.decideWorldDelete('alice.png');
+ok('其他卡共用的世界书不问也不删', decided === null && state.popupCalls.length === 0 && state.worlds.includes('W1'));
+
+// 用户选「只删角色卡」→ 保留
+state.worlds = ['W1', 'W2'];
+await pl.writeCardWorld('bob.png', null);
+await pl.writeCardWorld('alice.png', 'W2');
+state.popupAnswers = [0];
+decided = await pl.decideWorldDelete('alice.png');
+ok('选「只删角色卡」→ 不删世界书', decided === null && state.worlds.includes('W2'), `worlds=${state.worlds.join(',')}`);
+
+// 卡没绑世界书 → 不问
+state.popupCalls.length = 0;
+await pl.writeCardWorld('alice.png', null);
+decided = await pl.decideWorldDelete('alice.png');
+ok('没绑世界书的卡不问', decided === null && state.popupCalls.length === 0);
+
+// 开关关闭 → 不问
+await pl.writeCardWorld('alice.png', 'W2');
+pl.settings().module.deleteWorldWithCard = false;
+state.popupCalls.length = 0;
+decided = await pl.decideWorldDelete('alice.png');
+ok('关掉开关后不问也不删', decided === null && state.popupCalls.length === 0);
+pl.settings().module.deleteWorldWithCard = true;
+
+// 没有预先确认就不删（防止删卡流程意外连带删除）
+state.worlds = ['W1', 'W2'];
+await pl.onCharacterDeleted({ id: 0, character: { avatar: 'alice.png', name: 'alice', data: { extensions: { world: 'W2' } } } });
+ok('没预先确认时删卡不动世界书', state.worlds.includes('W2'), `worlds=${state.worlds.join(',')}`);
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
