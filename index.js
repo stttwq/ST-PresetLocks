@@ -230,6 +230,97 @@ function popupOpen() {
     return !!(popupInstance && popupInstance.dlg && popupInstance.dlg.hasAttribute('open'));
 }
 
+// ===== 角色卡管理界面里的预设下拉 =====
+
+/** 直接读酒馆自己的预设下拉，拿到的就是当前 API 可用的预设名，不猜接口形状。 */
+function presetNames() {
+    const pm = getPresetManager();
+    if (!pm) return [];
+    const el = typeof pm.select === 'string' ? document.querySelector(pm.select) : pm.select;
+    if (!el || !el.options) return [];
+    return Array.from(el.options)
+        .map((o) => o.text.trim())
+        .filter(Boolean);
+}
+
+function injectEditorRow() {
+    if (document.getElementById('preset_locks_row')) return true;
+    const anchor = document.getElementById('spoiler_free_desc') || document.getElementById('descriptionWrapper');
+    if (!anchor || !anchor.parentElement) return false;
+
+    const row = document.createElement('div');
+    row.id = 'preset_locks_row';
+    row.className = 'flex-container flexFlowColumn';
+    row.innerHTML = `
+        <div class="title_restorable">
+            <span>🔒 预设锁定</span>
+            <span id="preset_locks_hint" class="opacity50p font70p"></span>
+        </div>
+        <select id="preset_locks_select" class="text_pole wide100p"></select>`;
+    anchor.parentElement.insertBefore(row, anchor);
+
+    const sel = row.querySelector('#preset_locks_select');
+    sel.addEventListener('focus', () => refreshEditorRow());
+    sel.addEventListener('mousedown', () => refreshEditorRow());
+    sel.addEventListener('change', () => onEditorChange());
+    refreshEditorRow();
+    return true;
+}
+
+function refreshEditorRow() {
+    const sel = document.getElementById('preset_locks_select');
+    if (!sel) return;
+
+    const key = cardKey();
+    const lock = getLock(key);
+    const bound = lock?.preset || '';
+    const names = presetNames();
+    if (bound && !names.includes(bound)) names.push(bound); // 预设被删/改名时也列出来，免得静默丢绑定
+
+    sel.replaceChildren(new Option('（不绑定预设）', ''));
+    for (const n of names) sel.append(new Option(n, n, false, n === bound));
+    sel.value = bound;
+    sel.disabled = !key;
+    sel.dataset.avatar = key || '';
+    sel.dataset.bound = bound;
+
+    const hint = document.getElementById('preset_locks_hint');
+    if (hint) {
+        hint.textContent = !key
+            ? '群聊或无选中角色时不适用'
+            : lock
+                ? `绑定中 · ${lock.from}`
+                : '在这张卡上选一个预设，立即生效并写进卡里';
+    }
+}
+
+async function onEditorChange() {
+    const sel = document.getElementById('preset_locks_select');
+    if (!sel) return;
+    const avatar = sel.dataset.avatar;
+    const preset = sel.value;
+    if (!avatar || preset === sel.dataset.bound) return;
+
+    if (!preset) {
+        await clearLock(avatar);
+        toast('已解除这张卡的预设绑定');
+        refreshEditorRow();
+        return;
+    }
+
+    const r = await setLock(avatar, preset);
+    if (r.ok) toast(`角色卡「${cardName() || avatar}」已绑定预设「${preset}」`);
+    else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
+    refreshEditorRow();
+
+    applying = true;
+    try {
+        await applyPreset(preset);
+    } finally {
+        applying = false;
+    }
+}
+
 function toast(msg, type = 'success') {
     if (!settings().module.notify) return;
     if (typeof toastr === 'undefined') return;
@@ -276,8 +367,8 @@ function panelHtml(key, name) {
         <label><input type="checkbox" id="pl-notify" ${s.notify ? 'checked' : ''}> 显示提示</label>
 
         <div class="opacity50p font70p">
-            记录的是<b>当前正在生效的预设</b>：先在酒馆的预设下拉里选好，再点「存为角色卡」。
-            记录写进角色卡文件的 <code>data.extensions.presetLocks</code>，卡导出/上传到别的酒馆时一起走；
+            绑定不在这里设。去<b>角色卡管理界面</b>（左上角 ☰），在标签下方新增的「🔒 预设锁定」下拉里直接选预设。
+            选择会写进角色卡文件的 <code>data.extensions.presetLocks</code>，卡导出/上传到别的酒馆时一起走；
             同时在本机 <code>settings.json</code> 留一份兜底。
         </div>
     </div>
@@ -331,21 +422,6 @@ async function showPanel() {
     };
 
     const buttons = [
-        button('✔ 存为角色卡', async () => {
-            if (!key) { toast('群聊或未选中角色时无法记录', 'info'); return; }
-            const cur = currentPresetName();
-            if (!cur) { toast('读不到当前预设，未保存', 'warning'); return; }
-            const r = await setLock(key, cur);
-            if (r.ok) toast(`已记录到角色卡「${name}」→ ${cur}`);
-            else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
-            refresh();
-        }),
-        button('✖ 清除记录', async () => {
-            if (!key) { toast('群聊或未选中角色时没有记录', 'info'); return; }
-            await clearLock(key);
-            toast('已清除这张卡的记录');
-            refresh();
-        }),
         button('▶ 立即应用', async () => {
             const lock = getLock(key);
             if (!lock) { toast('这张卡没有记录', 'info'); return; }
@@ -385,14 +461,17 @@ function init() {
     settings();
     migrateByName();
     injectMenuItem();
+    injectEditorRow();
 
     // 酒馆的菜单是懒渲染的，注入失败时重试几次
     let tries = 0;
     const timer = setInterval(() => {
-        if (injectMenuItem() || ++tries > 20) clearInterval(timer);
+        const menuOk = injectMenuItem();
+        const rowOk = injectEditorRow();
+        if ((menuOk && rowOk) || ++tries > 20) clearInterval(timer);
     }, 500);
 
-    eventSource.on(event_types.CHAT_CHANGED, () => onContextChanged());
+    eventSource.on(event_types.CHAT_CHANGED, () => { refreshEditorRow(); onContextChanged(); });
     if (event_types.CHAT_LOADED) eventSource.on(event_types.CHAT_LOADED, () => onContextChanged());
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次

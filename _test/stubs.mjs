@@ -33,6 +33,7 @@ export function getContext() {
 
 export function getPresetManager() {
     return {
+        select: '#fake-preset-select',
         getSelectedPresetName: () => state.selected,
         findPreset: (name) => (state.presets.includes(name) ? state.presets.indexOf(name) : undefined),
         selectPreset: async (index) => {
@@ -55,10 +56,47 @@ export const POPUP_RESULT = { AFFIRMATIVE: 1 };
 export const callGenericPopup = async () => POPUP_RESULT.AFFIRMATIVE;
 
 // 模拟服务端 /api/characters/merge-attributes：只做深合并到角色卡的 data 上
+class FakeOption {
+    constructor(text, value, defaultSelected, selected) {
+        this.text = text;
+        this.value = value;
+        this.selected = !!selected;
+    }
+}
+globalThis.Option = FakeOption;
+
+export const dom = { els: {} };
+
+export function makeFakeSelect() {
+    return {
+        children: [],
+        value: '',
+        disabled: false,
+        dataset: {},
+        replaceChildren(o) {
+            this.children = [o];
+        },
+        append(o) {
+            this.children.push(o);
+            this.children = this.children.slice(-50);
+        },
+    };
+}
+
 globalThis.document = {
-    querySelector: () => null,
+    getElementById: (id) => dom.els[id] || null,
+    querySelector: (sel) =>
+        sel === '#fake-preset-select' ? { options: state.presets.map((p) => ({ text: p })) } : null,
     querySelectorAll: () => [],
-    createElement: () => ({ addEventListener() {}, appendChild() {} }),
+    createElement: () => ({
+        addEventListener() {},
+        appendChild() {},
+        querySelector: () => null,
+        insertBefore() {},
+        set innerHTML(v) {},
+        set className(v) {},
+        set id(v) {},
+    }),
 };
 
 globalThis.fetch = async (url, opts) => {

@@ -1,4 +1,4 @@
-import { state, extension_settings } from './stubs.mjs';
+import { state, extension_settings, dom, makeFakeSelect } from './stubs.mjs';
 import * as pl from './pl.mjs';
 
 const results = [];
@@ -111,6 +111,30 @@ ok('改角色名后记录仍生效', state.selected === 'B', `selected=${state.s
 extension_settings.PresetLocks.characterLocks = { 鲍勃: { preset: 'C', at: 1 }, 'ghost.png': { preset: 'A', at: 1 } };
 const moved = pl.migrateByName();
 ok('旧版名字记录迁移为 avatar 键', moved === 1 && extension_settings.PresetLocks.characterLocks['bob.png']?.preset === 'C' && !('鲍勃' in extension_settings.PresetLocks.characterLocks), `moved=${moved}`);
+
+// 14. 角色卡管理界面的下拉：渲染出预设列表并选中已绑定项
+use(0, 'chat-a');
+const sel = makeFakeSelect();
+dom.els['preset_locks_select'] = sel;
+pl.refreshEditorRow();
+const labels = sel.children.map((o) => o.value);
+ok('下拉渲染出「不绑定 + 全部预设」', labels[0] === '' && labels.includes('A') && labels.includes('C'), JSON.stringify(labels));
+ok('下拉选中卡内绑定的 B', sel.value === 'B' && sel.dataset.bound === 'B' && sel.disabled === false, `value=${sel.value}`);
+
+// 15. 在下拉里换一个预设 → 立刻写卡并生效
+state.selected = 'A';
+sel.value = 'C';
+await pl.onEditorChange();
+ok('下拉选 C → 写进卡里', state.ctx.characters[0].data.extensions.presetLocks?.preset === 'C', JSON.stringify(state.ctx.characters[0].data.extensions));
+ok('下拉选 C → 预设立刻切到 C', state.selected === 'C', `selected=${state.selected}`);
+
+// 16. 选「不绑定」→ 卡内清除，不再自动切
+sel.value = '';
+await pl.onEditorChange();
+state.selected = 'A';
+state.selectedCalls.length = 0;
+await pl.onContextChanged();
+ok('选「不绑定」→ 卡内清空且不再自动切', state.ctx.characters[0].data.extensions.presetLocks === null && state.selected === 'A' && state.selectedCalls.length === 0);
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
