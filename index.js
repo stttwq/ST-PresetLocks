@@ -194,7 +194,7 @@ let lastForceAt = 0;
 /** /api/worldinfo/list 的 file_id 才是酒馆内部用的名字（data.extensions.world 存的就是它）。 */
 async function fetchWorldList(force = false) {
     const now = Date.now();
-    if (!force && worldListCache && now - worldListAt < 30000) return worldListCache;
+    if (!force && worldListCache && now - worldListAt < 60000) return worldListCache;
     try {
         const res = await fetch('/api/worldinfo/list', {
             method: 'POST',
@@ -248,33 +248,48 @@ async function writeCardWorlds(avatar, list) {
     return true;
 }
 
-/**
- * 让酒馆真的把这些世界书当成「角色世界书」加载。
- * 第一本靠 data.extensions.world 原生生效，其余的靠 world_info.charLore（按角色文件名挂额外书）。
- * charLore 存在 settings.json，所以每次打开卡都重新同步一次。
- */
-function syncCharLore(avatar, list) {
-    const base = avatar ? avatar.replace(/\.[^/.]+$/, '') : '';
-    if (!base) return false;
-
-    const extra = (Array.isArray(list) ? list : []).slice(1);
-    if (!extension_settings.world_info) extension_settings.world_info = {};
-    const wi = extension_settings.world_info;
-    if (!Array.isArray(wi.charLore)) wi.charLore = [];
-
-    const idx = wi.charLore.findIndex((e) => e && e.name === base);
-    const before = idx === -1 ? [] : wi.charLore[idx].extraBooks || [];
+/** 在某个 store 上登记录角色的额外世界书，返回是否真改动了。 */
+function upsertCharLore(store, base, extra) {
+    if (!store || typeof store !== 'object') return false;
+    if (!Array.isArray(store.charLore)) store.charLore = [];
+    const arr = store.charLore;
+    const idx = arr.findIndex((e) => e && e.name === base);
+    const before = idx === -1 ? [] : arr[idx].extraBooks || [];
     if (JSON.stringify(before) === JSON.stringify(extra)) return false;
 
     if (!extra.length) {
-        if (idx !== -1) wi.charLore.splice(idx, 1);
+        if (idx !== -1) arr.splice(idx, 1);
     } else if (idx === -1) {
-        wi.charLore.push({ name: base, extraBooks: [...extra] });
+        arr.push({ name: base, extraBooks: [...extra] });
     } else {
-        wi.charLore[idx] = { ...wi.charLore[idx], extraBooks: [...extra] };
+        arr[idx] = { ...arr[idx], extraBooks: [...extra] };
     }
-    saveSettingsDebounced();
     return true;
+}
+
+/**
+ * 让酒馆真的把这些世界书当成「角色世界书」加载。
+ * 第一本靠 data.extensions.world 原生生效，其余的靠 world_info.charLore。
+ *
+ * 关键：酒馆模块内的 world_info 和 extension_settings.world_info 不是同一个对象。
+ * 只写后者不生效（扫描时看不到），只写前者不落盘（刷新就没了），所以两边都要写。
+ */
+async function syncCharLore(avatar, list) {
+    const base = avatar ? avatar.replace(/\.[^/.]+$/, '') : '';
+    if (!base) return false;
+    const extra = (Array.isArray(list) ? list : []).slice(1);
+
+    let changed = false;
+    try {
+        const wi = await import('../../../world-info.js');
+        if (upsertCharLore(wi.world_info, base, extra)) changed = true;
+    } catch (error) {
+        console.warn(`${LOG} 写酒馆内存里的角色世界书失败:`, error);
+    }
+    if (!extension_settings.world_info) extension_settings.world_info = {};
+    if (upsertCharLore(extension_settings.world_info, base, extra)) changed = true;
+    if (changed) saveSettingsDebounced();
+    return changed;
 }
 
 /** 还有哪些卡（含其他世界书槽位）在指向同一个世界书，排除指定那张卡。 */
@@ -421,7 +436,7 @@ async function applyPreset(name) {
 async function onContextChanged() {
     // 打开卡/聊天时先把卡内绑定的多本世界书同步成酒馆的「角色世界书」，让它自动生效
     const activeKey = cardKey();
-    if (activeKey) syncCharLore(activeKey, getWorlds(activeKey));
+    if (activeKey) await syncCharLore(activeKey, getWorlds(activeKey));
 
     if (applying || popupOpen()) return;
 
@@ -623,21 +638,47 @@ async function onWorldToggle(event) {
         toastr.error('写不进角色卡，世界书绑定失败', '预设锁定');
         return;
     }
-    syncCharLore(avatar, next);
+    await syncCharLore(avatar, next);
     toast(next.length ? `已绑定 ${next.length} 本世界书` : '已解除世界书绑定');
     refreshWorldRow(true);
 }
 
 let editorTimer = null;
 
-/** 面板每打开一次就自己对齐一次，不依赖酒馆发事件，也不依赖下拉能拿到焦点。 */
+/** 角色面板是否真的开着。只看 DOM 存在不够，面板关着时行也还在。 */
+function panelOpen() {
+    const panel = document.getElementById('right-nav-panel');
+    if (panel) return panel.classList.contains('openDrawer');
+    const row = document.getElementById('preset_locks_row');
+    return !!(row && row.offsetParent);
+}
+
+/**
+ * 刷新节奏：面板没开就完全不干活；开着时 2 秒巡检一次（内容有 diff 才重建 DOM）。
+ * 另外挿入点被酒馆重绘时（换卡、导入）额外触发一次。
+ */
 function startEditorWatch() {
     if (editorTimer) return;
+
+    document.addEventListener(
+        'click',
+        (event) => {
+            const target = event.target instanceof Element ? event.target.closest('.character_select') : null;
+            if (!target) return;
+            setTimeout(() => {
+                refreshEditorRow();
+                refreshWorldRow();
+            }, 500);
+        },
+        true,
+    );
+
     editorTimer = setInterval(() => {
         if (!document.getElementById('preset_locks_row')) return;
+        if (!panelOpen()) return;
         refreshEditorRow();
         refreshWorldRow();
-    }, 500);
+    }, 2000);
 }
 
 function refreshEditorRow(force = false) {

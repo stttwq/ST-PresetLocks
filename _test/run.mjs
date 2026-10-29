@@ -267,6 +267,13 @@ state.ctx.groupId = null;
 await pl.onContextChanged();
 ok('打开卡时自动把多本世界书同步成角色世界书', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
 
+// 酒馆模块内的 world_info 与 extension_settings.world_info 是两个对象，两边都要写
+const storeA = {};
+const storeB = {};
+ok('upsertCharLore 能分别写两份 store', pl.upsertCharLore(storeA, 'c', ['W2']) && pl.upsertCharLore(storeB, 'c', ['W2']) && storeA.charLore[0].extraBooks[0] === 'W2' && storeB.charLore[0].extraBooks[0] === 'W2');
+ok('upsertCharLore 重复写返回 false（不触发落盘）', pl.upsertCharLore(storeA, 'c', ['W2']) === false);
+ok('upsertCharLore 传空数组就删条目', pl.upsertCharLore(storeA, 'c', []) === true && storeA.charLore.length === 0);
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
