@@ -2,6 +2,8 @@
 
 按**角色卡**记住预设。同一张卡的聊天文件有多少个都用同一个预设，切到哪个角色就换回哪个预设。
 
+绑定写在**角色卡自己身上**（`data.extensions.presetLocks`），所以卡导出、上传、换酒馆时一起走。
+
 中文精简版，基于 [Character Locks v4.0.0](https://github.com/aikohanasaki/SillyTavern-CharacterLocks)（aikohanasaki，AGPL-3.0）重做，只保留角色卡级锁定。
 
 ## 安装
@@ -11,6 +13,8 @@
 ```text
 SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 ```
+
+或者从 GitHub 安装：扩展面板 → Install extension → `https://github.com/stttwq/ST-PresetLocks`
 
 重启酒馆，刷新页面。聊天输入框旁的**魔杖菜单**里会出现「预设锁定」。
 
@@ -33,16 +37,37 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 ## 记录存在哪
 
-- 写在酒馆扩展设置 `extension_settings.PresetLocks.characterLocks`，也就是 `settings.json`
-- 键是角色卡的 `avatar`（卡文件名），不是角色名，**改角色名不会丢记录**
-- 群聊没有角色卡，因此不参与
+**主记录：角色卡内**，写在卡文件的 `data.extensions.presetLocks`，形如 `{ preset: "我的预设", at: 1730000000000 }`。
+
+- 走酒馆自带的 `POST /api/characters/merge-attributes`，服务端只做深度合并这一个子键，卡的其它字段不动，写入是原子的
+- 它和酒馆自己存 `fav` / `world` / `depth_prompt` 用的是同一套机制，符合角色卡 V2/V3 规范
+- 面板里这条记录会标「卡内」
+
+**兜底记录：本机**，`extension_settings.PresetLocks.characterLocks`（即 `settings.json`），按角色卡的 `avatar` 文件名索引。
+
+- 只在卡内没有记录时生效，面板里标「本机兜底」
+- 写卡失败时（无写权限、旧版酒馆没有该接口）自动落到这里，功能照旧
 
 ## 已知限制
 
+- 云酒馆/服务器需要允许写角色卡（能编辑角色就能写）。写不进去时提示会说明，并退回本机记录
 - 记录跟着**卡文件**走：删卡重导成新文件名，旧记录失效，需要重存一次
 - 记录的预设若被删除或改名，切换时会提示「预设不存在」并保持原样
 - 只在**切换角色 / 加载聊天**时检查一次。同一聊天内手动改预设不会被抢回，也不会被记住
+- 卡内的预设名写的是你自己酒馆里的名字，把卡分享给别人时对方会看到「预设不存在」
 - 与酒馆自带的 `bind_preset_to_connection`（绑定预设到连接）功能重叠。两者都写同一个预设选择框，若出现"切到错的预设"，先关掉那个
+
+## 开发
+
+`_test/` 里是离线逻辑测试，把 `index.js` 的 SillyTavern 导入换成桩件后直接跑真实代码：
+
+```bash
+cd _test
+node build.js   # 生成 pl.mjs
+node run.mjs    # 15 项断言
+```
+
+覆盖：卡内写入、卡内优先、本机兜底、写卡失败降级、明确清除不被兜底复活、群聊跳过、预设不存在、角色改名、旧版记录迁移。
 
 ## 许可
 

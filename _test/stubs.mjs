@@ -5,6 +5,8 @@ export const state = {
     selected: 'A',
     selectedCalls: [],
     handlers: {},
+    fetchOk: true,
+    fetchCalls: [],
 };
 
 export const extension_settings = {};
@@ -22,6 +24,8 @@ export const event_types = {
 };
 
 export const saveSettingsDebounced = () => {};
+
+export const getRequestHeaders = () => ({ 'Content-Type': 'application/json' });
 
 export function getContext() {
     return state.ctx;
@@ -50,8 +54,21 @@ export const POPUP_TYPE = { TEXT: 'text', CONFIRM: 'confirm' };
 export const POPUP_RESULT = { AFFIRMATIVE: 1 };
 export const callGenericPopup = async () => POPUP_RESULT.AFFIRMATIVE;
 
+// 模拟服务端 /api/characters/merge-attributes：只做深合并到角色卡的 data 上
 globalThis.document = {
     querySelector: () => null,
     querySelectorAll: () => [],
     createElement: () => ({ addEventListener() {}, appendChild() {} }),
+};
+
+globalThis.fetch = async (url, opts) => {
+    const body = JSON.parse(opts.body);
+    state.fetchCalls.push({ url, body });
+    if (!state.fetchOk) return { ok: false, status: 403 };
+    const ch = state.ctx.characters.find((c) => c.avatar === body.avatar);
+    if (ch) {
+        ch.data ||= {};
+        ch.data.extensions = Object.assign({}, ch.data.extensions, body.data.extensions);
+    }
+    return { ok: true, status: 200 };
 };

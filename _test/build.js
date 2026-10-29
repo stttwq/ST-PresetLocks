@@ -9,7 +9,7 @@ const firstImport = lines.findIndex((l) => l.startsWith('import '));
 let lastImport = firstImport;
 while (lastImport + 1 < lines.length && /^(import |\s+[A-Za-z_,{}\s]+\} from )/.test(lines[lastImport + 1])) lastImport++;
 
-const stub = `import { eventSource, event_types, saveSettingsDebounced, extension_settings, getContext, getPresetManager, Popup, POPUP_TYPE, POPUP_RESULT, callGenericPopup, state } from './stubs.mjs';`;
+const stub = `import { eventSource, event_types, saveSettingsDebounced, getRequestHeaders, extension_settings, getContext, getPresetManager, Popup, POPUP_TYPE, POPUP_RESULT, callGenericPopup, state } from './stubs.mjs';`;
 
 const out = [...lines.slice(0, firstImport), stub, ...lines.slice(lastImport + 1)].join('\n');
 

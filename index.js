@@ -2,17 +2,20 @@
  * 预设锁定（ST-PresetLocks）
  * 按角色卡记住预设：同一张卡的所有聊天共用一个预设，切换角色时自动换回。
  *
- * 基于 Character Locks v4.0.0 (aikohanasaki, AGPL-3.0) 重做的中文精简版，
- * 只保留「按角色卡锁定预设」这一个功能。
+ * 绑定写在角色卡自己的 data.extensions.presetLocks 里，卡走预设走；
+ * 同时在本机 settings.json 留一份兜底，写卡失败（无权限/旧版本）也能用。
+ *
+ * 基于 Character Locks v4.0.0 (aikohanasaki, AGPL-3.0) 重做的中文精简版。
  */
 
-import { eventSource, event_types, saveSettingsDebounced } from '../../../../script.js';
+import { eventSource, event_types, saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
 import { extension_settings, getContext } from '../../../extensions.js';
 import { Popup, POPUP_TYPE, POPUP_RESULT, callGenericPopup } from '../../../popup.js';
 import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
+const CARD_KEY = 'presetLocks';
 const AUTO = { NEVER: 'never', ASK: 'ask', ALWAYS: 'always' };
 
 const DEFAULTS = {
@@ -23,7 +26,7 @@ const DEFAULTS = {
 let popupInstance = null;
 let applying = false;
 
-// ===== 设置读写 =====
+// ===== 本机兜底记录（settings.json） =====
 
 function settings() {
     if (!extension_settings[MODULE]) extension_settings[MODULE] = {};
@@ -37,21 +40,103 @@ function saveSettings() {
     saveSettingsDebounced();
 }
 
-/** 记录以角色卡的 avatar（文件名）为键，改角色名不会丢记录。 */
-function getLock(key) {
+function getLocalLock(key) {
     return key ? settings().characterLocks[key] || null : null;
 }
 
-function setLock(key, preset) {
+function setLocalLock(key, preset) {
     if (!key) return;
     settings().characterLocks[key] = { preset, at: Date.now() };
     saveSettings();
 }
 
-function clearLock(key) {
+function dropLocalLock(key) {
     if (!key) return;
     delete settings().characterLocks[key];
     saveSettings();
+}
+
+// ===== 角色卡内记录（data.extensions.presetLocks） =====
+
+function currentChar() {
+    const ctx = getContext();
+    if (!ctx || ctx.groupId) return null;
+    const id = ctx.characterId;
+    if (typeof id !== 'number' || id < 0) return null;
+    return ctx.characters?.[id] || null;
+}
+
+function cardKey() {
+    return currentChar()?.avatar || null;
+}
+
+function cardName() {
+    return currentChar()?.name || null;
+}
+
+/**
+ * 返回 undefined = 卡里没写过；null = 卡里明确清除过；对象 = 有效记录。
+ * 明确清除时必须返回 null，否则会被本机兜底记录复活。
+ */
+function readCardLock() {
+    const ext = currentChar()?.data?.extensions;
+    if (!ext || typeof ext !== 'object' || !(CARD_KEY in ext)) return undefined;
+    const v = ext[CARD_KEY];
+    return v && typeof v === 'object' && v.preset ? v : null;
+}
+
+function writeCardLockMemory(value) {
+    const ch = currentChar();
+    if (!ch) return;
+    if (!ch.data || typeof ch.data !== 'object') ch.data = {};
+    if (!ch.data.extensions || typeof ch.data.extensions !== 'object') ch.data.extensions = {};
+    ch.data.extensions[CARD_KEY] = value;
+}
+
+/** 走服务端深度合并接口，只改 data.extensions.presetLocks，不动卡的其它字段。 */
+async function postCardLock(avatar, value) {
+    const res = await fetch('/api/characters/merge-attributes', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({ avatar, data: { extensions: { [CARD_KEY]: value } } }),
+    });
+    return res.ok;
+}
+
+/** 卡内为主：卡里写过就用卡里的，没写过才用本机兜底。 */
+function getLock(key) {
+    if (!key) return null;
+    const fromCard = readCardLock();
+    if (fromCard === null) return null;
+    if (fromCard) return { ...fromCard, from: '卡内' };
+    const local = getLocalLock(key);
+    return local ? { ...local, from: '本机' } : null;
+}
+
+async function setLock(key, preset) {
+    setLocalLock(key, preset); // 先落本机，写卡失败也不会丢
+    const value = { preset, at: Date.now() };
+    try {
+        const ok = await postCardLock(key, value);
+        if (ok) {
+            writeCardLockMemory(value);
+            return { ok: true, where: '卡内' };
+        }
+        return { ok: false, where: '本机', reason: '写卡被拒绝（HTTP 失败）' };
+    } catch (error) {
+        return { ok: false, where: '本机', reason: String(error?.message || error) };
+    }
+}
+
+async function clearLock(key) {
+    dropLocalLock(key);
+    try {
+        const ok = await postCardLock(key, null);
+        if (ok) writeCardLockMemory(null);
+        return ok;
+    } catch {
+        return false;
+    }
 }
 
 /** 旧版按角色名存的记录，启动时按名字匹配到 avatar 上，避免升级后记录消失。 */
@@ -72,32 +157,12 @@ function migrateByName() {
     return moved;
 }
 
-// ===== 当前上下文 =====
-
-/** 返回当前角色卡的稳定标识；群聊或没选角色时返回 null。 */
-function cardKey() {
-    const ctx = getContext();
-    if (!ctx || ctx.groupId) return null;
-    const id = ctx.characterId;
-    if (typeof id !== 'number' || id < 0) return null;
-    const ch = ctx.characters?.[id];
-    return ch?.avatar || null;
-}
-
-function cardName() {
-    const ctx = getContext();
-    if (!ctx || ctx.groupId) return null;
-    const id = ctx.characterId;
-    if (typeof id !== 'number' || id < 0) return null;
-    return ctx.characters?.[id]?.name || null;
-}
+// ===== 应用预设 =====
 
 function currentPresetName() {
     const pm = getPresetManager();
     return pm ? pm.getSelectedPresetName() || '' : '';
 }
-
-// ===== 应用预设 =====
 
 async function applyPreset(name) {
     const pm = getPresetManager();
@@ -181,9 +246,9 @@ function fmtTime(at) {
 }
 
 function lockText(lock) {
-    return lock
-        ? `<code>${lock.preset}</code> <span class="opacity50p font70p">${fmtTime(lock.at)}</span>`
-        : '<span class="opacity50p">未记录</span>';
+    if (!lock) return '<span class="opacity50p">未记录</span>';
+    const tag = lock.from === '卡内' ? '卡内' : '本机兜底';
+    return `<code>${lock.preset}</code> <span class="opacity50p font70p">${tag} · ${fmtTime(lock.at)}</span>`;
 }
 
 function panelHtml(key, name) {
@@ -212,7 +277,8 @@ function panelHtml(key, name) {
 
         <div class="opacity50p font70p">
             记录的是<b>当前正在生效的预设</b>：先在酒馆的预设下拉里选好，再点「存为角色卡」。
-            记录按角色卡文件绑定，同一张卡的所有聊天共用一条记录，改角色名不影响。
+            记录写进角色卡文件的 <code>data.extensions.presetLocks</code>，卡导出/上传到别的酒馆时一起走；
+            同时在本机 <code>settings.json</code> 留一份兜底。
         </div>
     </div>
     `;
@@ -255,7 +321,6 @@ async function showPanel() {
 
     const key = cardKey();
     const name = cardName();
-    const cur = currentPresetName();
 
     const refresh = () => {
         if (!popupOpen()) return;
@@ -266,16 +331,18 @@ async function showPanel() {
     };
 
     const buttons = [
-        button('✔ 存为角色卡', () => {
+        button('✔ 存为角色卡', async () => {
             if (!key) { toast('群聊或未选中角色时无法记录', 'info'); return; }
+            const cur = currentPresetName();
             if (!cur) { toast('读不到当前预设，未保存', 'warning'); return; }
-            setLock(key, cur);
-            toast(`已记录：角色卡「${name}」→ ${cur}`);
+            const r = await setLock(key, cur);
+            if (r.ok) toast(`已记录到角色卡「${name}」→ ${cur}`);
+            else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
             refresh();
         }),
-        button('✖ 清除记录', () => {
+        button('✖ 清除记录', async () => {
             if (!key) { toast('群聊或未选中角色时没有记录', 'info'); return; }
-            clearLock(key);
+            await clearLock(key);
             toast('已清除这张卡的记录');
             refresh();
         }),
