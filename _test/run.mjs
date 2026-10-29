@@ -163,6 +163,15 @@ for (const shape of ['jquery', 'element', 'string']) {
 }
 pmStub.shape = 'jquery';
 
+// 20. 酒馆 1.19 的 characterId 是字符串，自动切换仍要生效
+use(0, 'chat-a');
+await pl.setLock('alice.png', 'B');
+state.ctx.characterId = '0';
+state.selected = 'A';
+await pl.onContextChanged();
+ok('characterId 为字符串时照样自动切', state.selected === 'B', `selected=${state.selected} characterId=${state.ctx.characterId}`);
+use(0, 'chat-a');
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');

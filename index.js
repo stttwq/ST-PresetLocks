@@ -61,8 +61,9 @@ function dropLocalLock(key) {
 function currentChar() {
     const ctx = getContext();
     if (!ctx || ctx.groupId) return null;
-    const id = ctx.characterId;
-    if (typeof id !== 'number' || id < 0) return null;
+    // 酒馆 1.19 里 characterId 是字符串（"40"），旧版本是数字，两种都收
+    const id = Number(ctx.characterId);
+    if (!Number.isInteger(id) || id < 0) return null;
     return ctx.characters?.[id] || null;
 }
 
