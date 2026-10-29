@@ -31,9 +31,16 @@ export function getContext() {
     return state.ctx;
 }
 
+export const pmStub = { shape: 'jquery' };
+
 export function getPresetManager() {
     return {
-        select: '#fake-preset-select',
+        get select() {
+            const opts = state.presets.map((p) => ({ text: p }));
+            if (pmStub.shape === 'jquery') return [{ options: opts }];
+            if (pmStub.shape === 'element') return { options: opts };
+            return '#fake-preset-select';
+        },
         getSelectedPresetName: () => state.selected,
         findPreset: (name) => (state.presets.includes(name) ? state.presets.indexOf(name) : undefined),
         selectPreset: async (index) => {

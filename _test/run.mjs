@@ -1,4 +1,4 @@
-import { state, extension_settings, dom, makeFakeSelect } from './stubs.mjs';
+import { state, extension_settings, dom, makeFakeSelect, pmStub } from './stubs.mjs';
 import * as pl from './pl.mjs';
 
 const results = [];
@@ -153,6 +153,15 @@ state.selected = 'A';
 state.selectedCalls.length = 0;
 await pl.onContextChanged();
 ok('选「不绑定」→ 卡内清空且不再自动切', state.ctx.characters[0].data.extensions.presetLocks === null && state.selected === 'A' && state.selectedCalls.length === 0);
+
+// 19. presetManager.select 的三种形态都能拿到预设列表（酒馆 1.19 是 jQuery 对象）
+for (const shape of ['jquery', 'element', 'string']) {
+    pmStub.shape = shape;
+    pl.refreshEditorRow(true);
+    const n = sel.children.length - 1;
+    ok(`预设下拉来源形态 ${shape}`, n === state.presets.length, `options=${n}`);
+}
+pmStub.shape = 'jquery';
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;

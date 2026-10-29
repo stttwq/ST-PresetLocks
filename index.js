@@ -252,11 +252,20 @@ function popupOpen() {
 
 // ===== 角色卡管理界面里的预设下拉 =====
 
+/** 酒馆的 presetManager.select 在不同版本里是选择器字符串 / 原生 select / jQuery 对象，三种都兼容。 */
+function presetSelectEl() {
+    const pm = getPresetManager();
+    const s = pm?.select;
+    if (!s) return null;
+    if (typeof s === 'string') return document.querySelector(s);
+    if (s.options) return s;
+    if (s[0] && s[0].options) return s[0];
+    return null;
+}
+
 /** 直接读酒馆自己的预设下拉，拿到的就是当前 API 可用的预设名，不猜接口形状。 */
 function presetNames() {
-    const pm = getPresetManager();
-    if (!pm) return [];
-    const el = typeof pm.select === 'string' ? document.querySelector(pm.select) : pm.select;
+    const el = presetSelectEl();
     if (!el || !el.options) return [];
     return Array.from(el.options)
         .map((o) => o.text.trim())
