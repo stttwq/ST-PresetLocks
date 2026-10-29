@@ -188,6 +188,7 @@ function migrateByName() {
 
 let worldListCache = null;
 let worldListAt = 0;
+let lastForceAt = 0;
 
 /** /api/worldinfo/list 的 file_id 才是酒馆内部用的名字（data.extensions.world 存的就是它）。 */
 async function fetchWorldList(force = false) {
@@ -483,15 +484,22 @@ async function refreshWorldRow(force = false) {
     const card = panelCard();
     const key = card?.avatar || '';
     const bound = getWorld(key);
-    const list = await fetchWorldList(force);
-    const ids = list.map((w) => w.file_id);
+    let list = await fetchWorldList(force);
+    let ids = list.map((w) => w.file_id);
+
+    // 绑定的名字不在列表里：可能是缓存过期（刚新建/刚导入），强刷一次再下结论
+    if (bound && !ids.includes(bound) && Date.now() - lastForceAt > 5000) {
+        lastForceAt = Date.now();
+        list = await fetchWorldList(true);
+        ids = list.map((w) => w.file_id);
+    }
 
     const shown = Array.from(sel.options || []).map((o) => o.value);
     const needRebuild = force || sel.dataset.avatar !== key || shown.length - 1 !== ids.length || !shown.includes(bound);
     if (needRebuild) {
         sel.replaceChildren(new Option('（不绑定世界书）', ''));
         for (const w of list) sel.append(new Option(w.name, w.file_id, false, w.file_id === bound));
-        if (bound && !ids.includes(bound)) sel.append(new Option(`${bound}（文件缺失）`, bound, false, true));
+        if (bound && !ids.includes(bound)) sel.append(new Option(`${bound}（服务器上找不到此文件）`, bound, false, true));
         sel.value = bound;
         sel.dataset.avatar = key;
         sel.dataset.bound = bound;
@@ -501,13 +509,16 @@ async function refreshWorldRow(force = false) {
     const hint = document.getElementById('world_lock_hint');
     if (hint) {
         const refs = bound ? worldRefs(bound, key).length : 0;
+        const missing = !!bound && !ids.includes(bound);
         hint.textContent = !key
             ? '先在左侧选中一张角色卡'
-            : !bound
-                ? '选一本世界书，它会随卡自动生效，删卡时可连带删除'
-                : refs
-                    ? `绑定中 · 另有 ${refs} 张卡共用，删卡时保留`
-                    : '绑定中 · 删卡时会一并删除';
+            : missing
+                ? '绑定的世界书文件不在了：改选一本，或选「不绑定世界书」清除'
+                : !bound
+                    ? '选一本世界书，它会随卡自动生效，删卡时可连带删除'
+                    : refs
+                        ? `绑定中 · 另有 ${refs} 张卡共用，删卡时保留`
+                        : '绑定中 · 删卡时会一并删除';
     }
 }
 
@@ -766,6 +777,9 @@ function init() {
     eventSource.on(event_types.CHAT_CHANGED, () => { refreshEditorRow(); refreshWorldRow(); onContextChanged(); });
     if (event_types.CHAT_LOADED) eventSource.on(event_types.CHAT_LOADED, () => onContextChanged());
     if (event_types.CHARACTER_DELETED) eventSource.on(event_types.CHARACTER_DELETED, onCharacterDeleted);
+    if (event_types.WORLDINFO_UPDATED) {
+        eventSource.on(event_types.WORLDINFO_UPDATED, () => { worldListCache = null; refreshWorldRow(true); });
+    }
     installDeleteHook();
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次
