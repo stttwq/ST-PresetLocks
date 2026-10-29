@@ -250,6 +250,20 @@ async function deleteWorld(worldName) {
     return res.ok;
 }
 
+/**
+ * 删掉文件后必须让酒馆刷新世界书列表。
+ * 不然 world_names 里还留着名字，面板上会出现一个点了没反应、删也删不掉的幽灵条目。
+ */
+async function refreshStWorldList() {
+    worldListCache = null;
+    try {
+        const wi = await import('../../../world-info.js');
+        if (typeof wi.updateWorldInfoList === 'function') await wi.updateWorldInfoList();
+    } catch (error) {
+        console.warn(`${LOG} 刷新酒馆世界书列表失败:`, error);
+    }
+}
+
 /** 删卡前先问：这张卡绑定的世界书要不要一并删。此时卡还在，弹窗不会被酒馆重渲染冲掉。 */
 async function decideWorldDelete(avatar) {
     if (!settings().module.deleteWorldWithCard) return null;
@@ -318,6 +332,7 @@ async function onCharacterDeleted(payload) {
 
     if (await deleteWorld(world)) {
         worldListCache = null;
+        await refreshStWorldList();
         toast(`已删除世界书「${world}」`);
     } else {
         toastr.error(`删除世界书「${world}」失败`, '预设锁定');
