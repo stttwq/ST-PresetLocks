@@ -18,6 +18,15 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 重启酒馆，刷新页面。
 
+## 兼容性
+
+在真实运行的 **SillyTavern 1.19.0** 上验证过：卡内写入（`/api/characters/merge-attributes` 返回 200）、面板下拉、切角色自动换预设。
+
+版本差异已适配两处：
+
+- `ctx.characterId` 在 1.19 是字符串（`"40"`），旧版本是数字
+- `presetManager.select` 是 jQuery 对象；旧版本可能是选择器字符串
+
 ## 怎么用
 
 1. 点左上角 ☰ 打开**角色卡管理界面**
@@ -67,10 +76,10 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 ```bash
 cd _test
 node build.js   # 生成 pl.mjs
-node run.mjs    # 20 项断言
+node run.mjs    # 27 项断言
 ```
 
-覆盖：卡内写入、卡内优先、本机兜底、写卡失败降级、明确清除不被兜底复活、群聊跳过、预设不存在、角色改名、旧版记录迁移、角色卡界面下拉的渲染与写入。
+覆盖：卡内写入、卡内优先、本机兜底、写卡失败降级、明确清除不被兜底复活、群聊跳过、预设不存在、角色改名、旧版记录迁移、角色卡界面下拉的渲染与写入、`characterId` 字符串、三种预设下拉来源形态。
 
 ## 许可
 
