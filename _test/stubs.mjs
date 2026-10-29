@@ -66,6 +66,8 @@ class FakeOption {
 globalThis.Option = FakeOption;
 
 export const dom = { els: {} };
+dom.els['avatar_url_pole'] = { value: '' };
+dom.els['character_name_pole'] = { value: '' };
 
 export function makeFakeSelect() {
     return {
@@ -73,6 +75,9 @@ export function makeFakeSelect() {
         value: '',
         disabled: false,
         dataset: {},
+        get options() {
+            return this.children;
+        },
         replaceChildren(o) {
             this.children = [o];
         },

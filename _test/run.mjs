@@ -114,21 +114,39 @@ ok('旧版名字记录迁移为 avatar 键', moved === 1 && extension_settings.P
 
 // 14. 角色卡管理界面的下拉：渲染出预设列表并选中已绑定项
 use(0, 'chat-a');
+dom.els['avatar_url_pole'].value = 'alice.png'; // 面板显示的是爱丽丝
 const sel = makeFakeSelect();
 dom.els['preset_locks_select'] = sel;
-pl.refreshEditorRow();
+pl.refreshEditorRow(true);
 const labels = sel.children.map((o) => o.value);
 ok('下拉渲染出「不绑定 + 全部预设」', labels[0] === '' && labels.includes('A') && labels.includes('C'), JSON.stringify(labels));
 ok('下拉选中卡内绑定的 B', sel.value === 'B' && sel.dataset.bound === 'B' && sel.disabled === false, `value=${sel.value}`);
 
-// 15. 在下拉里换一个预设 → 立刻写卡并生效
+// 15. 下拉永远可点（禁用的下拉拿不到焦点，就会卡在旧状态）
+state.ctx.characterId = -1;
+state.ctx.groupId = 'g1';
+pl.refreshEditorRow();
+ok('无角色/群聊时下拉仍可点', sel.disabled === false, `disabled=${sel.disabled}`);
+state.ctx.groupId = null;
+use(0, 'chat-a');
+
+// 16. 面板切到另一张卡 → 下拉跟着换卡，不串记录
+state.ctx.characters[1].data.extensions.presetLocks = { preset: 'A', at: 1 };
+dom.els['avatar_url_pole'].value = 'bob.png';
+pl.refreshEditorRow();
+ok('面板换卡后下拉跟着切到鲍勃的记录', sel.value === 'A' && sel.dataset.avatar === 'bob.png', `value=${sel.value} avatar=${sel.dataset.avatar}`);
+dom.els['avatar_url_pole'].value = 'alice.png';
+pl.refreshEditorRow();
+ok('换回爱丽丝 → 下拉回到 B', sel.value === 'B' && sel.dataset.avatar === 'alice.png', `value=${sel.value}`);
+
+// 17. 在下拉里换一个预设 → 立刻写卡并生效
 state.selected = 'A';
 sel.value = 'C';
 await pl.onEditorChange();
 ok('下拉选 C → 写进卡里', state.ctx.characters[0].data.extensions.presetLocks?.preset === 'C', JSON.stringify(state.ctx.characters[0].data.extensions));
 ok('下拉选 C → 预设立刻切到 C', state.selected === 'C', `selected=${state.selected}`);
 
-// 16. 选「不绑定」→ 卡内清除，不再自动切
+// 18. 选「不绑定」→ 卡内清除，不再自动切
 sel.value = '';
 await pl.onEditorChange();
 state.selected = 'A';

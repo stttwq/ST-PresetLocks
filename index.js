@@ -74,19 +74,39 @@ function cardName() {
     return currentChar()?.name || null;
 }
 
+function findChar(avatar) {
+    if (!avatar) return null;
+    const chars = getContext()?.characters || [];
+    return chars.find((c) => c && c.avatar === avatar) || null;
+}
+
+/**
+ * 角色卡管理界面当前显示的那张卡。酒馆会把它的 avatar 写进 #avatar_url_pole，
+ * 这个值不依赖 characterId / groupId，所以面板里没开聊天也能用。
+ */
+function panelCard() {
+    const el = document.getElementById('avatar_url_pole');
+    const avatar = el && el.value ? el.value.trim() : '';
+    if (!avatar) return null;
+    const namePole = document.getElementById('character_name_pole');
+    const ch = findChar(avatar);
+    const name = ch?.name || (namePole && namePole.value ? namePole.value.trim() : avatar);
+    return { avatar, name };
+}
+
 /**
  * 返回 undefined = 卡里没写过；null = 卡里明确清除过；对象 = 有效记录。
  * 明确清除时必须返回 null，否则会被本机兜底记录复活。
  */
-function readCardLock() {
-    const ext = currentChar()?.data?.extensions;
+function readCardLock(avatar) {
+    const ext = findChar(avatar)?.data?.extensions;
     if (!ext || typeof ext !== 'object' || !(CARD_KEY in ext)) return undefined;
     const v = ext[CARD_KEY];
     return v && typeof v === 'object' && v.preset ? v : null;
 }
 
-function writeCardLockMemory(value) {
-    const ch = currentChar();
+function writeCardLockMemory(avatar, value) {
+    const ch = findChar(avatar);
     if (!ch) return;
     if (!ch.data || typeof ch.data !== 'object') ch.data = {};
     if (!ch.data.extensions || typeof ch.data.extensions !== 'object') ch.data.extensions = {};
@@ -106,7 +126,7 @@ async function postCardLock(avatar, value) {
 /** 卡内为主：卡里写过就用卡里的，没写过才用本机兜底。 */
 function getLock(key) {
     if (!key) return null;
-    const fromCard = readCardLock();
+    const fromCard = readCardLock(key);
     if (fromCard === null) return null;
     if (fromCard) return { ...fromCard, from: '卡内' };
     const local = getLocalLock(key);
@@ -119,7 +139,7 @@ async function setLock(key, preset) {
     try {
         const ok = await postCardLock(key, value);
         if (ok) {
-            writeCardLockMemory(value);
+            writeCardLockMemory(key, value);
             return { ok: true, where: '卡内' };
         }
         return { ok: false, where: '本机', reason: '写卡被拒绝（HTTP 失败）' };
@@ -132,7 +152,7 @@ async function clearLock(key) {
     dropLocalLock(key);
     try {
         const ok = await postCardLock(key, null);
-        if (ok) writeCardLockMemory(null);
+        if (ok) writeCardLockMemory(key, null);
         return ok;
     } catch {
         return false;
@@ -260,34 +280,52 @@ function injectEditorRow() {
     anchor.parentElement.insertBefore(row, anchor);
 
     const sel = row.querySelector('#preset_locks_select');
+    sel.addEventListener('pointerdown', () => refreshEditorRow());
     sel.addEventListener('focus', () => refreshEditorRow());
-    sel.addEventListener('mousedown', () => refreshEditorRow());
     sel.addEventListener('change', () => onEditorChange());
-    refreshEditorRow();
+    refreshEditorRow(true);
+    startEditorWatch();
     return true;
 }
 
-function refreshEditorRow() {
+let editorTimer = null;
+
+/** 面板每打开一次就自己对齐一次，不依赖酒馆发事件，也不依赖下拉能拿到焦点。 */
+function startEditorWatch() {
+    if (editorTimer) return;
+    editorTimer = setInterval(() => {
+        const row = document.getElementById('preset_locks_row');
+        if (!row || !row.offsetParent) return; // 面板没开就不干活
+        refreshEditorRow();
+    }, 500);
+}
+
+function refreshEditorRow(force = false) {
     const sel = document.getElementById('preset_locks_select');
     if (!sel) return;
 
-    const key = cardKey();
+    const card = panelCard();
+    const key = card?.avatar || '';
     const lock = getLock(key);
     const bound = lock?.preset || '';
     const names = presetNames();
     if (bound && !names.includes(bound)) names.push(bound); // 预设被删/改名时也列出来，免得静默丢绑定
 
-    sel.replaceChildren(new Option('（不绑定预设）', ''));
-    for (const n of names) sel.append(new Option(n, n, false, n === bound));
-    sel.value = bound;
-    sel.disabled = !key;
-    sel.dataset.avatar = key || '';
-    sel.dataset.bound = bound;
+    const shown = Array.from(sel.options || []).map((o) => o.value);
+    const needRebuild = force || sel.dataset.avatar !== key || shown.length - 1 !== names.length || !shown.includes(bound);
+    if (needRebuild) {
+        sel.replaceChildren(new Option('（不绑定预设）', ''));
+        for (const n of names) sel.append(new Option(n, n, false, n === bound));
+        sel.value = bound;
+        sel.dataset.avatar = key;
+        sel.dataset.bound = bound;
+    }
+    sel.disabled = false; // 永远可点：禁用的下拉拿不到焦点，也就会卡在旧状态上
 
     const hint = document.getElementById('preset_locks_hint');
     if (hint) {
         hint.textContent = !key
-            ? '群聊或无选中角色时不适用'
+            ? '先在左侧选中一张角色卡'
             : lock
                 ? `绑定中 · ${lock.from}`
                 : '在这张卡上选一个预设，立即生效并写进卡里';
@@ -299,19 +337,25 @@ async function onEditorChange() {
     if (!sel) return;
     const avatar = sel.dataset.avatar;
     const preset = sel.value;
-    if (!avatar || preset === sel.dataset.bound) return;
+    if (!avatar) {
+        sel.value = '';
+        toast('先在左侧选中一张角色卡', 'info');
+        return;
+    }
+    if (preset === sel.dataset.bound) return;
 
     if (!preset) {
         await clearLock(avatar);
         toast('已解除这张卡的预设绑定');
-        refreshEditorRow();
+        refreshEditorRow(true);
         return;
     }
 
     const r = await setLock(avatar, preset);
-    if (r.ok) toast(`角色卡「${cardName() || avatar}」已绑定预设「${preset}」`);
+    const shownName = findChar(avatar)?.name || panelCard()?.name || avatar;
+    if (r.ok) toast(`角色卡「${shownName}」已绑定预设「${preset}」`);
     else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
-    refreshEditorRow();
+    refreshEditorRow(true);
 
     applying = true;
     try {
