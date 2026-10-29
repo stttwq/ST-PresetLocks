@@ -17,7 +17,7 @@ fs.writeFileSync(
     path.join(__dirname, 'pl.mjs'),
     out +
         `
-export { settings, getLock, setLock, clearLock, migrateByName, cardKey, cardName, applyPreset, onContextChanged, currentPresetName, refreshEditorRow, onEditorChange, refreshWorldRow, onWorldChange, getWorld, writeCardWorld, worldRefs, decideWorldDelete, onCharacterDeleted, pendingWorldDelete, refreshStWorldList };
+export { settings, getLock, setLock, clearLock, migrateByName, cardKey, cardName, applyPreset, onContextChanged, currentPresetName, refreshEditorRow, onEditorChange, refreshWorldRow, onWorldToggle, getWorlds, writeCardWorlds, syncCharLore, worldRefs, decideWorldDelete, onCharacterDeleted, pendingWorldDelete, refreshStWorldList };
 `,
 );
 console.log('pl.mjs 生成完毕，替换了 import 行', firstImport + 1, '-', lastImport + 1);

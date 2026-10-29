@@ -12,7 +12,7 @@ export const state = {
     popupCalls: [],
 };
 
-export const extension_settings = {};
+export const extension_settings = { world_info: { charLore: [] } };
 
 export const eventSource = {
     on(name, fn) {
@@ -85,6 +85,7 @@ dom.els['character_name_pole'] = { value: '' };
 
 export function makeFakeSelect() {
     return {
+        tagName: 'DIV',
         children: [],
         value: '',
         disabled: false,
@@ -93,13 +94,33 @@ export function makeFakeSelect() {
             return this.children;
         },
         replaceChildren(o) {
-            this.children = [o];
+            this.children = o ? [o] : [];
         },
-        append(o) {
-            this.children.push(o);
-            this.children = this.children.slice(-50);
+        append(...els) {
+            this.children.push(...els.flat().filter(Boolean));
         },
     };
+}
+
+export function makeElem(tag) {
+    const el = {
+        tagName: String(tag).toUpperCase(),
+        children: [],
+        dataset: {},
+        className: '',
+        textContent: '',
+        type: '',
+        checked: false,
+        append(...kids) {
+            this.children.push(...kids.flat().filter(Boolean));
+        },
+        replaceChildren(...kids) {
+            this.children = kids.flat().filter(Boolean);
+        },
+        addEventListener() {},
+        querySelector: () => null,
+    };
+    return el;
 }
 
 globalThis.document = {
@@ -107,15 +128,7 @@ globalThis.document = {
     querySelector: (sel) =>
         sel === '#fake-preset-select' ? { options: state.presets.map((p) => ({ text: p })) } : null,
     querySelectorAll: () => [],
-    createElement: () => ({
-        addEventListener() {},
-        appendChild() {},
-        querySelector: () => null,
-        insertBefore() {},
-        set innerHTML(v) {},
-        set className(v) {},
-        set id(v) {},
-    }),
+    createElement: (tag) => makeElem(tag),
 };
 
 globalThis.fetch = async (url, opts) => {

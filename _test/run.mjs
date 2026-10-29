@@ -172,74 +172,100 @@ await pl.onContextChanged();
 ok('characterId 为字符串时照样自动切', state.selected === 'B', `selected=${state.selected} characterId=${state.ctx.characterId}`);
 use(0, 'chat-a');
 
-// ===== 世界书绑定 =====
-const wsel = makeFakeSelect();
-dom.els['world_lock_select'] = wsel;
+// ===== 世界书绑定（多本）=====
+const wlist = {
+    children: [],
+    dataset: {},
+    replaceChildren() { this.children = []; },
+    append(el) { this.children.push(el); },
+};
+dom.els['world_lock_list'] = wlist;
 dom.els['world_lock_hint'] = { textContent: '' };
 
 dom.els['avatar_url_pole'].value = 'alice.png';
 await pl.refreshWorldRow(true);
-ok('世界书下拉列出服务器上的世界书', wsel.children.map((o) => o.value).join(',') === ',W1,W2', wsel.children.map((o) => o.value).join(','));
-ok('未绑定时下拉停在「不绑定」', wsel.value === '' && wsel.disabled === false);
+ok('世界书列表列出服务器上全部世界书', wlist.children.filter((c) => c.tagName === 'LABEL').length === 2, `labels=${wlist.children.filter(c=>c.tagName==='LABEL').length}`);
 
-wsel.value = 'W1';
-await pl.onWorldChange();
-ok('选世界书 → 写进卡内 data.extensions.world', alice().data.extensions.world === 'W1', JSON.stringify(alice().data.extensions));
-
+// 勾选两本 → 卡内 worldBooks 存两本，world 存第一本
+const boxOf = (id) => wlist.children.filter((c) => c.tagName === 'LABEL').map((l) => l.children[0]).find((b) => b.dataset.world === id);
+const toggle = async (id) => { const b = boxOf(id); b.checked = true; await pl.onWorldToggle({ target: b }); };
+await toggle('W1');
 await pl.refreshWorldRow(true);
-ok('重新渲染后选中已绑定的 W1', wsel.value === 'W1' && wsel.dataset.bound === 'W1');
+await toggle('W2');
+ok('多本绑定写进卡内 worldBooks', JSON.stringify(alice().data.extensions.worldBooks) === '["W1","W2"]', JSON.stringify(alice().data.extensions));
+ok('第一本同时写进原生 world 字段', alice().data.extensions.world === 'W1');
+ok('其余本同步进 charLore', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
 
-wsel.value = '';
-await pl.onWorldChange();
-ok('选「不绑定」→ 卡内写 null', alice().data.extensions.world === null, JSON.stringify(alice().data.extensions));
+// 取消第一本 → 顺序重排，world 跟着变成剩下那本
+await pl.refreshWorldRow(true);
+boxOf('W1').checked = false;
+await pl.onWorldToggle({ target: boxOf('W1') });
+ok('取消第一本后 world 变成剩下一本', JSON.stringify(alice().data.extensions.worldBooks) === '["W2"]' && alice().data.extensions.world === 'W2', JSON.stringify(alice().data.extensions));
+ok('只剩一本时 charLore 清空该角色条目', !extension_settings.world_info.charLore.some((e) => e.name === 'alice'), JSON.stringify(extension_settings.world_info.charLore));
 
-// 删卡连带删世界书（先问，再删）
-await pl.writeCardWorld('alice.png', 'W1');
-state.worlds = ['W1', 'W2'];
+// 全部取消 → 两个字段都清空
+await pl.refreshWorldRow(true);
+boxOf('W2').checked = false;
+await pl.onWorldToggle({ target: boxOf('W2') });
+ok('全部取消后 world/worldBooks 都清空', alice().data.extensions.world === null && alice().data.extensions.worldBooks === null, JSON.stringify(alice().data.extensions));
+
+// 旧版单本字段仍能被读到
+state.ctx.characters[0].data.extensions = { world: 'W1' };
+ok('旧版单本绑定兼容读取', JSON.stringify(pl.getWorlds('alice.png')) === '["W1"]', JSON.stringify(pl.getWorlds('alice.png')));
+
+// 删卡连带删多本世界书
+await pl.writeCardWorlds('alice.png', ['W1', 'W2']);
+state.worlds = ['W1', 'W2', 'W3'];
 state.popupCalls.length = 0;
 state.popupAnswers = [1];
-let decided = await pl.decideWorldDelete('alice.png');
-ok('删卡前先问一次', state.popupCalls.length === 1 && state.popupCalls[0].html.includes('W1'), `popups=${state.popupCalls.length}`);
-ok('确认后返回待删的世界书', decided === 'W1', `decided=${decided}`);
-pl.pendingWorldDelete.set('alice.png', decided);
+let toDelete = await pl.decideWorldDelete('alice.png');
+ok('删卡前一次性列出可删的多本世界书', toDelete.length === 2 && state.popupCalls.length === 1, JSON.stringify(toDelete));
+pl.pendingWorldDelete.set('alice.png', toDelete);
 await pl.onCharacterDeleted({ id: 0, character: alice() });
-ok('删卡完成后真的删掉世界书文件', !state.worlds.includes('W1'), `worlds=${state.worlds.join(',')}`);
-ok('删完清空待删队列', !pl.pendingWorldDelete.has('alice.png'));
+ok('多本世界书都删掉', !state.worlds.includes('W1') && !state.worlds.includes('W2') && state.worlds.includes('W3'), `worlds=${state.worlds.join(',')}`);
 
-// 共用同一个世界书 → 不问也不删
+// 共用保护：某本被别的卡引用则保留
 state.worlds = ['W1', 'W2'];
-await pl.writeCardWorld('alice.png', 'W1');
-await pl.writeCardWorld('bob.png', 'W1');
-state.popupCalls.length = 0;
-decided = await pl.decideWorldDelete('alice.png');
-ok('其他卡共用的世界书不问也不删', decided === null && state.popupCalls.length === 0 && state.worlds.includes('W1'));
+await pl.writeCardWorlds('alice.png', ['W1', 'W2']);
+await pl.writeCardWorlds('bob.png', ['W2']);
+state.popupAnswers = [1];
+toDelete = await pl.decideWorldDelete('alice.png');
+ok('被其他卡共用的那本不删', JSON.stringify(toDelete) === '["W1"]', JSON.stringify(toDelete));
+await pl.writeCardWorlds('bob.png', []);
 
-// 用户选「只删角色卡」→ 保留
+// 用户取消 → 一本都不删
 state.worlds = ['W1', 'W2'];
-await pl.writeCardWorld('bob.png', null);
-await pl.writeCardWorld('alice.png', 'W2');
+await pl.writeCardWorlds('alice.png', ['W1']);
 state.popupAnswers = [0];
-decided = await pl.decideWorldDelete('alice.png');
-ok('选「只删角色卡」→ 不删世界书', decided === null && state.worlds.includes('W2'), `worlds=${state.worlds.join(',')}`);
+toDelete = await pl.decideWorldDelete('alice.png');
+ok('选「只删角色卡」→ 世界书全保留', toDelete.length === 0 && state.worlds.length === 2);
 
 // 卡没绑世界书 → 不问
 state.popupCalls.length = 0;
-await pl.writeCardWorld('alice.png', null);
-decided = await pl.decideWorldDelete('alice.png');
-ok('没绑世界书的卡不问', decided === null && state.popupCalls.length === 0);
+await pl.writeCardWorlds('alice.png', []);
+toDelete = await pl.decideWorldDelete('alice.png');
+ok('没绑世界书的卡不问', toDelete.length === 0 && state.popupCalls.length === 0);
 
 // 开关关闭 → 不问
-await pl.writeCardWorld('alice.png', 'W2');
+await pl.writeCardWorlds('alice.png', ['W1']);
 pl.settings().module.deleteWorldWithCard = false;
 state.popupCalls.length = 0;
-decided = await pl.decideWorldDelete('alice.png');
-ok('关掉开关后不问也不删', decided === null && state.popupCalls.length === 0);
+toDelete = await pl.decideWorldDelete('alice.png');
+ok('关掉开关后不问也不删', toDelete.length === 0 && state.popupCalls.length === 0);
 pl.settings().module.deleteWorldWithCard = true;
 
-// 没有预先确认就不删（防止删卡流程意外连带删除）
+// 没有预先确认就不删
 state.worlds = ['W1', 'W2'];
 await pl.onCharacterDeleted({ id: 0, character: { avatar: 'alice.png', name: 'alice', data: { extensions: { world: 'W2' } } } });
-ok('没预先确认时删卡不动世界书', state.worlds.includes('W2'), `worlds=${state.worlds.join(',')}`);
+ok('没预先确认时删卡不动世界书', state.worlds.length === 2, `worlds=${state.worlds.join(',')}`);
+
+// 打开卡时自动同步 charLore（这是「自动启用」的落地点）
+extension_settings.world_info.charLore = [];
+await pl.writeCardWorlds('alice.png', ['W1', 'W2']);
+state.ctx.characterId = 0;
+state.ctx.groupId = null;
+await pl.onContextChanged();
+ok('打开卡时自动把多本世界书同步成角色世界书', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
