@@ -54,12 +54,12 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 酒馆模块内部的 `world_info` 和 `extension_settings.world_info` **不是同一个对象**。只写后者，界面上看得见但扫描时根本不生效；只写前者，当下生效但刷新就没了。所以两处都会写。
 
-## 锁定模型（v1.9 起）
+## 锁定模型（v2.0 起）
 
 一张卡 = 一个主预设 + 几个可选项。面板默认收起，只留一行摘要；未绑定的卡会自动展开。
 
 ```
-🔒 锁定   v1.9.0                    卡内          ⌄
+🔒 锁定   v2.0.0                    卡内          ⌄
 主预设「夏瑶 天琴座 V2 Beta 1.0」· 提示词 172/215 · 世界书 2 本
 ```
 
