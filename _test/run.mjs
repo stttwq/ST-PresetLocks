@@ -335,6 +335,11 @@ ok('模板预设不存在时安全跳过', typeof changed2 === 'boolean');
 
 await pl.setLock('alice.png', 'B', {});
 
+// worldBooks 有、world 空（手写/旧数据）时自动补上第一本
+alice().data.extensions = { worldBooks: ['W2'], world: null };
+await pl.syncCharLore('alice.png', ['W2']);
+ok('只有 worldBooks 时自动补 world 字段', alice().data.extensions.world === 'W2', JSON.stringify(alice().data.extensions));
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
