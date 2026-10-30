@@ -163,7 +163,7 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 ```bash
 cd _test
 node build.js   # 生成 pl.mjs
-node run.mjs    # 71 项断言
+node run.mjs    # 61 项断言
 ```
 
 覆盖：卡内写入、卡内优先、本机兜底、写卡失败降级、明确清除不被兜底复活、群聊跳过、预设不存在、角色改名、旧版记录迁移、角色卡界面下拉的渲染与写入、`characterId` 字符串、三种预设下拉来源形态、世界书绑定与删卡连带删除的各条安全分支。
