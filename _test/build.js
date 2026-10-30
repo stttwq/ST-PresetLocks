@@ -13,13 +13,14 @@ const stub = `import { eventSource, event_types, saveSettingsDebounced, getReque
 
 const out = [...lines.slice(0, firstImport), stub, ...lines.slice(lastImport + 1)]
     .join('\n')
-    .replace(/import\('\.\.\/\.\.\/\.\.\/openai\.js'\)/g, "import('./openai-stub.mjs')");
+    .replace(/import\('\.\.\/\.\.\/\.\.\/openai\.js'\)/g, "import('./openai-stub.mjs')")
+    .replace(/import\('\.\.\/\.\.\/\.\.\/world-info\.js'\)/g, "import('./world-info-stub.mjs')");
 
 fs.writeFileSync(
     path.join(__dirname, 'pl.mjs'),
     out +
         `
-export { settings, getLock, setLock, clearLock, migrateByName, cardKey, cardName, applyPreset, onContextChanged, currentPresetName, refreshEditorRow, onEditorChange, refreshWorldRow, onWorldToggle, getWorlds, writeCardWorlds, syncCharLore, upsertCharLore, worldRefs, decideWorldDelete, onCharacterDeleted, pendingWorldDelete, refreshStWorldList, settlePreset, verifyPreset, applyLock, lockSatisfied, setLockExtra, refreshExtraSelects, presetHasSPreset, syncSPresetUI, EXTRA_APIS, VERSION };
+export { settings, getLock, setLock, clearLock, migrateByName, cardKey, cardName, applyPreset, onContextChanged, currentPresetName, refreshEditorRow, onEditorChange, refreshWorldRow, getWorlds, writeCardWorlds, syncCharLore, upsertCharLore, worldRefs, decideWorldDelete, onCharacterDeleted, pendingWorldDelete, refreshStWorldList, settlePreset, verifyPreset, applyLock, lockSatisfied, capturePromptOrder, promptOrderSummary, applyPromptOrder, onEnableChange, onCapturePrompts, worldStats, refreshWorldResults, onWorldAction, onWorldAdd, commitWorlds, bodyOpen, setBodyOpen, presetHasSPreset, syncSPresetUI, VERSION };
 `,
 );
 console.log('pl.mjs 生成完毕，替换了 import 行', firstImport + 1, '-', lastImport + 1);

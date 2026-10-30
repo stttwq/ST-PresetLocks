@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '1.8.3'; // 与 manifest.json 同步（测试会校）
+const VERSION = '1.9.0'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -136,25 +136,16 @@ function getLock(key) {
     return local ? { ...local, from: '本机' } : null;
 }
 
-async function setLock(key, preset, extra) {
-    // 先落本机，写卡失败也不会丢
-    const prev = getLocalLock(key);
-    const merged = { preset, at: Date.now() };
-    const nextExtra = extra !== undefined ? extra : prev?.extra;
-    if (nextExtra && Object.keys(nextExtra).some((k) => nextExtra[k])) merged.extra = nextExtra;
+async function setLock(key, patch) {
+    if (!key) return { ok: false, where: '本机', reason: '没有角色卡' };
+    // 先落本机，写卡失败也不会丢；合并基准取「卡内优先」的现有记录
+    const prev = { ...(getLock(key) || {}) };
+    delete prev.from;
+    const merged = { ...prev, ...patch, at: Date.now() };
+    if (!merged.preset) return { ok: true, where: '清空' };
     settings().characterLocks[key] = merged;
     saveSettings();
     return await writeLockToCard(key, merged);
-}
-
-/** 只改某一种模板的绑定，其余保持不动。 */
-async function setLockExtra(key, apiId, value) {
-    const lock = getLock(key);
-    if (!lock || !lock.preset) return { ok: false, where: '本机', reason: '还没有主预设绑定' };
-    const extra = { ...(lock.extra || {}) };
-    if (value) extra[apiId] = value;
-    else delete extra[apiId];
-    return await setLock(key, lock.preset, extra);
 }
 
 async function writeLockToCard(key, value) {
@@ -599,70 +590,89 @@ function verifyPreset(name, oai) {
     }
 }
 
-/** 可一并锁定的其它模板管理器：切主预设不会带它们，得单独切。 */
-const EXTRA_APIS = [
-    ['context', '上下文模板'],
-    ['instruct', '指令模板'],
-    ['sysprompt', '系统提示'],
-    ['reasoning', '推理格式'],
-];
+// ===== 提示词启用状态与顺序的快照 =====
 
-function extraNames(apiId) {
-    const el = presetSelectEl(apiId);
-    if (!el || !el.options) return [];
-    return Array.from(el.options)
-        .map((o) => o.text.trim())
-        .filter(Boolean);
-}
-
-function currentExtraName(apiId) {
-    const pm = getPresetManager(apiId);
+/** 拿当前活状态的 prompt_order 快照（深拷贝，直接存卡里）。 */
+function capturePromptOrder(oai) {
     try {
-        return pm ? pm.getSelectedPresetName() || '' : '';
-    } catch {
-        return '';
+        const live = typeof oai.getChatCompletionPreset === 'function' ? oai.getChatCompletionPreset() : null;
+        const po = live && Array.isArray(live.prompt_order) ? live.prompt_order : null;
+        if (!po || !po.length) return null;
+        return JSON.parse(JSON.stringify(po));
+    } catch (error) {
+        console.warn(`${LOG} 读取提示词顺序失败:`, error);
+        return null;
     }
 }
 
-/** 按锁定的组合切换：主预设 + 各模板。返回是否真的变了。 */
+/** 快照里的摘要：[总条数, 已启用数]。prompt_order 可能有多个块，要全加。 */
+function promptOrderSummary(snapshot) {
+    const blocks = Array.isArray(snapshot) ? snapshot : [];
+    let total = 0;
+    let on = 0;
+    for (const b of blocks) {
+        const order = b && Array.isArray(b.order) ? b.order : [];
+        total += order.length;
+        on += order.filter((e) => e && e.enabled).length;
+    }
+    return [total, on];
+}
+
+/** 把快照写回活状态。返回是否真的变了。 */
+async function applyPromptOrder(oai, snapshot) {
+    try {
+        if (!Array.isArray(snapshot) || !snapshot.length) return false;
+        const live = oai.getChatCompletionPreset();
+        if (JSON.stringify(live.prompt_order) === JSON.stringify(snapshot)) return false;
+
+        oai.oai_settings.prompt_order = JSON.parse(JSON.stringify(snapshot));
+        const pmgr = oai.promptManager;
+        if (pmgr && typeof pmgr.render === 'function') pmgr.render(false);
+        saveSettingsDebounced();
+        return true;
+    } catch (error) {
+        console.warn(`${LOG} 写回提示词顺序失败:`, error);
+        return false;
+    }
+}
+
+/** 按锁定的项目切换：主预设 → 提示词快照。返回是否真的变了。 */
 async function applyLock(lock) {
     if (!lock) return false;
     let changed = false;
 
     if (lock.preset) changed = (await applyPreset(lock.preset)) || changed;
 
-    for (const [apiId, label] of EXTRA_APIS) {
-        const want = lock.extra?.[apiId];
-        if (!want) continue;
-        const pm = getPresetManager(apiId);
-        if (!pm) continue;
-        if (currentExtraName(apiId) === want) continue;
-        const idx = pm.findPreset(want);
-        if (idx === undefined || idx === null) {
-            toast(`${label}「${want}」已不存在`, 'warning');
-            continue;
-        }
-        await pm.selectPreset(idx);
-        changed = true;
+    if (lock.enable?.prompts && lock.prompts) {
+        const oai = await getOpenAiModule();
+        if (oai) changed = (await applyPromptOrder(oai, lock.prompts)) || changed;
     }
     return changed;
 }
 
-/** 锁定是否已经全部生效。 */
-function lockSatisfied(lock) {
+/** 锁定是否已经全部生效（主预设 + 提示词快照）。 */
+async function lockSatisfied(lock) {
     if (!lock) return true;
     if (lock.preset && lock.preset !== currentPresetName()) return false;
-    for (const [apiId] of EXTRA_APIS) {
-        const want = lock.extra?.[apiId];
-        if (want && currentExtraName(apiId) !== want) return false;
+    if (lock.enable?.prompts && lock.prompts) {
+        const oai = await getOpenAiModule();
+        if (oai) {
+            try {
+                const live = oai.getChatCompletionPreset();
+                if (JSON.stringify(live.prompt_order) !== JSON.stringify(lock.prompts)) return false;
+            } catch {
+                /* 读不到就不当 blocker */
+            }
+        }
     }
     return true;
 }
 
 async function onContextChanged() {
-    // 打开卡/聊天时先把卡内绑定的多本世界书同步成酒馆的「角色世界书」，让它自动生效
+    // 打开卡/聊天时同步世界书（只有勾了「世界书」才动）
     const activeKey = cardKey();
-    if (activeKey) await syncCharLore(activeKey, getWorlds(activeKey));
+    const activeLock = activeKey ? getLock(activeKey) : null;
+    if (activeKey && activeLock?.enable?.worlds) await syncCharLore(activeKey, getWorlds(activeKey));
 
     if (applying || popupOpen()) return;
 
@@ -671,7 +681,7 @@ async function onContextChanged() {
 
     const lock = getLock(key);
     if (!lock || !lock.preset) return;
-    if (lockSatisfied(lock)) return;
+    if (await lockSatisfied(lock)) return;
 
     const mode = settings().module.autoApply;
     if (mode === AUTO.NEVER) return;
@@ -743,135 +753,268 @@ function injectEditorRow() {
     row.id = 'preset_locks_row';
     row.className = 'flex-container flexFlowColumn';
     row.innerHTML = `
-        <div class="title_restorable">
-            <span>🔒 预设锁定</span>
-            <span class="opacity50p font70p" style="margin-left:6px">v${VERSION}</span>
-            <span id="preset_locks_hint" class="opacity50p font70p"></span>
+        <div class="title_restorable flex gap1 alignitemscenter">
+            <span>🔒 锁定</span>
+            <span class="opacity50p font70p">v${VERSION}</span>
+            <span id="preset_locks_hint" class="opacity50p font70p flex1"></span>
+            <span id="preset_locks_toggle" class="menu_button menu_button_icon" title="展开/收起"><i class="fa-solid fa-chevron-down"></i></span>
         </div>
-        <select id="preset_locks_select" class="text_pole wide100p"></select>
-        <div id="preset_locks_extra" class="flex gap1 flexFlowColumn wide100p" style="margin-top:4px"></div>`;
+        <div id="preset_locks_summary" class="opacity70p font90p"></div>
+        <div id="preset_locks_body" class="flex gap1 flexFlowColumn wide100p" style="display:none">
+            <div class="opacity50p font70p">主预设</div>
+            <select id="preset_locks_select" class="text_pole wide100p"></select>
+
+            <label class="flex gap1 alignitemscenter" title="把当前预设的提示词启用/关闭与顺序一起记到这张卡">
+                <input type="checkbox" id="pl_enable_prompts">
+                <span>提示词启用状态与顺序</span>
+                <span id="pl_prompts_info" class="opacity50p font70p"></span>
+            </label>
+            <div id="pl_prompts_actions" class="flex gap1 alignitemscenter" style="display:none">
+                <div id="pl_prompts_capture" class="menu_button">用当前状态更新快照</div>
+            </div>
+
+            <label class="flex gap1 alignitemscenter" title="这张卡要带哪些世界书">
+                <input type="checkbox" id="pl_enable_worlds">
+                <span>世界书</span>
+                <span id="world_lock_hint" class="opacity50p font70p"></span>
+            </label>
+            <div id="pl_worlds_box" class="flex gap1 flexFlowColumn" style="display:none">
+                <div id="world_lock_list" class="flex gap1 flexFlowColumn"></div>
+                <input id="world_lock_search" class="text_pole" placeholder="搜索世界书以添加…">
+                <div id="world_lock_results" class="flex gap1 flexFlowColumn" style="max-height:160px;overflow:auto"></div>
+            </div>
+        </div>`;
     anchor.parentElement.insertBefore(row, anchor);
 
-    const worldRow = document.createElement('div');
-    worldRow.id = 'preset_locks_world_row';
-    worldRow.className = 'flex-container flexFlowColumn';
-    worldRow.innerHTML = `
-        <div class="title_restorable">
-            <span>🌍 世界书锁定（可多选）</span>
-            <span class="opacity50p font70p" style="margin-left:6px">v${VERSION}</span>
-            <span id="world_lock_hint" class="opacity50p font70p"></span>
-        </div>
-        <div id="world_lock_list" class="flex gap1 flexFlowColumn wide100p" style="max-height:200px;overflow:auto;"></div>`;
-    anchor.parentElement.insertBefore(worldRow, anchor);
-
-    const wlist = worldRow.querySelector('#world_lock_list');
-    wlist.addEventListener('change', (event) => onWorldToggle(event));
-
+    row.querySelector('#preset_locks_toggle').addEventListener('click', () => setBodyOpen(!bodyOpen()));
     const sel = row.querySelector('#preset_locks_select');
     sel.addEventListener('pointerdown', () => refreshEditorRow());
     sel.addEventListener('focus', () => refreshEditorRow());
     sel.addEventListener('change', () => onEditorChange());
 
-    const extra = row.querySelector('#preset_locks_extra');
-    extra.addEventListener('change', (event) => onExtraChange(event));
+    row.querySelector('#pl_enable_prompts').addEventListener('change', (e) => onEnableChange('prompts', e.target.checked));
+    row.querySelector('#pl_enable_worlds').addEventListener('change', (e) => onEnableChange('worlds', e.target.checked));
+    row.querySelector('#pl_prompts_capture').addEventListener('click', () => onCapturePrompts());
+    row.querySelector('#world_lock_search').addEventListener('input', () => refreshWorldResults());
+    row.querySelector('#world_lock_list').addEventListener('click', (e) => onWorldAction(e));
+    row.querySelector('#world_lock_results').addEventListener('click', (e) => onWorldAdd(e));
+
     refreshEditorRow(true);
     refreshWorldRow(true);
     startEditorWatch();
     return true;
 }
 
+function bodyOpen() {
+    const body = document.getElementById('preset_locks_body');
+    return !!(body && body.style.display !== 'none');
+}
+
+function setBodyOpen(open) {
+    const body = document.getElementById('preset_locks_body');
+    if (!body) return;
+    body.style.display = open ? '' : 'none';
+    const icon = document.querySelector('#preset_locks_toggle i');
+    if (icon) icon.className = open ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down';
+    if (open) {
+        refreshEditorRow(true);
+        refreshWorldRow(true);
+    }
+}
+
+const statsCache = new Map();
+
+/** 一本书的条目统计：[常驻数, 关键词数]。用酒馆自己的缓存读，不额外请求。 */
+async function worldStats(name) {
+    if (statsCache.has(name)) return statsCache.get(name);
+    let stats = null;
+    try {
+        const wi = await getWorldInfoModule();
+        const data = wi && typeof wi.loadWorldInfo === 'function' ? await wi.loadWorldInfo(name) : null;
+        const entries = data && data.entries ? Object.values(data.entries) : null;
+        if (entries) {
+            stats = {
+                constant: entries.filter((e) => e && e.constant).length,
+                keyword: entries.filter((e) => e && !e.constant).length,
+            };
+        }
+    } catch {
+        stats = null;
+    }
+    statsCache.set(name, stats);
+    return stats;
+}
+
+function worldStatText(stats) {
+    if (!stats) return '';
+    return `常驻 ${stats.constant} / 关键词 ${stats.keyword}`;
+}
+
+/** 已绑定的世界书：序号 + 上移下移 + 移除 + 条目统计。 */
 async function refreshWorldRow(force = false) {
     const list = document.getElementById('world_lock_list');
-    if (!list) return;
+    const results = document.getElementById('world_lock_results');
+    if (!list || !results) return;
 
     const card = panelCard();
     const key = card?.avatar || '';
     const bound = getWorlds(key);
-    let worlds = await fetchWorldList(force);
-    let ids = worlds.map((w) => w.file_id);
+    let all = await fetchWorldList(force);
+    let ids = all.map((w) => w.file_id);
 
-    // 绑定的名字不在列表里：可能是缓存过期（刚新建/刚导入），强刷一次再下结论
+    // 绑定的名字不在列表里：可能是缓存过期，强刷一次再下结论
     if (bound.some((w) => !ids.includes(w)) && Date.now() - lastForceAt > 5000) {
         lastForceAt = Date.now();
-        worlds = await fetchWorldList(true);
-        ids = worlds.map((w) => w.file_id);
+        all = await fetchWorldList(true);
+        ids = all.map((w) => w.file_id);
     }
 
-    const rows = worlds.map((w) => ({ id: w.file_id, label: w.name }));
-    for (const w of bound) {
-        if (!rows.some((r) => r.id === w)) rows.push({ id: w, label: `${w}（服务器上找不到此文件）`, missing: true });
-    }
-
-    const signature = `${key}|${bound.join(',')}|${rows.map((r) => r.id).join(',')}`;
-    if (force || list.dataset.sig !== signature) {
-        list.dataset.sig = signature;
+    const sig = `${key}|${bound.join(',')}|${ids.join(',')}`;
+    if (force || list.dataset.sig !== sig) {
+        list.dataset.sig = sig;
         list.dataset.avatar = key;
         list.replaceChildren();
+
         if (!key) {
-            const empty = document.createElement('div');
-            empty.className = 'opacity50p font70p';
-            empty.textContent = '先在左侧选中一张角色卡';
-            list.append(empty);
-        } else if (!rows.length) {
-            const empty = document.createElement('div');
-            empty.className = 'opacity50p font70p';
-            empty.textContent = '服务器上还没有世界书';
-            list.append(empty);
+            const tip = document.createElement('div');
+            tip.className = 'opacity50p font70p';
+            tip.textContent = '先在左侧选中一张角色卡';
+            list.append(tip);
+        } else if (!bound.length) {
+            const tip = document.createElement('div');
+            tip.className = 'opacity50p font70p';
+            tip.textContent = '还没有绑定世界书，用下面搜索框添加';
+            list.append(tip);
         } else {
-            for (const r of rows) {
-                const order = bound.indexOf(r.id);
-                const label = document.createElement('label');
-                label.className = 'flex gap1 alignitemscenter';
-                const box = document.createElement('input');
-                box.type = 'checkbox';
-                box.dataset.world = r.id;
-                box.checked = order >= 0;
-                const text = document.createElement('span');
-                text.className = r.missing ? 'flex1 opacity50p' : 'flex1';
-                text.textContent = order >= 0 ? `${order + 1}. ${r.label}` : r.label;
-                label.append(box, text);
-                list.append(label);
+            for (let i = 0; i < bound.length; i++) {
+                const name = bound[i];
+                const missing = !ids.includes(name);
+                const stats = missing ? null : await worldStats(name);
+
+                const line = document.createElement('div');
+                line.className = 'flex gap1 alignitemscenter';
+
+                const idx = document.createElement('span');
+                idx.className = 'opacity50p font80p';
+                idx.textContent = `${i + 1}.`;
+
+                const label = document.createElement('span');
+                label.className = missing ? 'flex1 opacity50p' : 'flex1';
+                label.textContent = missing ? `${name}（服务器上找不到）` : name;
+                label.title = worldStatText(stats);
+
+                const stat = document.createElement('span');
+                stat.className = 'opacity50p font70p';
+                stat.textContent = worldStatText(stats);
+
+                const mkBtn = (text, act, title) => {
+                    const b = document.createElement('span');
+                    b.className = 'menu_button menu_button_icon';
+                    b.dataset.act = act;
+                    b.dataset.world = name;
+                    b.title = title;
+                    b.textContent = text;
+                    return b;
+                };
+
+                line.append(idx, label, stat, mkBtn('↑', 'up', '上移（序号越小越先注入；第 1 本例外，它在最后）'), mkBtn('↓', 'down', '下移'), mkBtn('×', 'remove', '移除'));
+                list.append(line);
             }
         }
+        refreshWorldResults();
     }
 
     const hint = document.getElementById('world_lock_hint');
     if (hint) {
         const missing = bound.filter((w) => !ids.includes(w));
-        const shared = bound.filter((w) => worldRefs(w, key).length);
-        hint.textContent = !key
-            ? '先在左侧选中一张角色卡'
-            : !bound.length
-                ? '勾选一本或多本世界书，随卡自动生效'
-                : missing.length
-                    ? `有 ${missing.length} 本在服务器上找不到：取消勾选可清除`
-                    : `${bound.length} 本生效中（序号即加载顺序）${shared.length ? ` · ${shared.length} 本被其他卡共用，删卡时保留` : ''}`;
+        hint.textContent = !key ? '' : !bound.length ? '未绑定' : missing.length ? `${bound.length} 本 · ${missing.length} 本缺失` : `${bound.length} 本`;
     }
 }
 
-async function onWorldToggle(event) {
-    const box = event.target;
-    if (!box || box.type !== 'checkbox' || !box.dataset.world) return;
+/** 搜索结果：未绑定的书，点一下就加。 */
+function refreshWorldResults() {
+    const box = document.getElementById('world_lock_results');
+    const input = document.getElementById('world_lock_search');
+    if (!box || !input) return;
 
-    const list = document.getElementById('world_lock_list');
-    const avatar = list?.dataset.avatar;
-    if (!avatar) {
-        box.checked = !box.checked;
-        toast('先在左侧选中一张角色卡', 'info');
+    const card = panelCard();
+    const key = card?.avatar || '';
+    const bound = getWorlds(key);
+    const q = String(input.value || '').trim().toLowerCase();
+    const pool = (worldListCache || []).filter((w) => !bound.includes(w.file_id));
+    const hits = (q ? pool.filter((w) => w.name.toLowerCase().includes(q)) : pool).slice(0, 8);
+
+    box.replaceChildren();
+    if (!key) return;
+    if (!hits.length) {
+        const tip = document.createElement('div');
+        tip.className = 'opacity50p font70p';
+        tip.textContent = q ? '没有匹配的世界书' : '全部已绑定';
+        box.append(tip);
         return;
     }
+    for (const w of hits) {
+        const add = document.createElement('div');
+        add.className = 'menu_button';
+        add.dataset.act = 'add';
+        add.dataset.world = w.file_id;
+        add.textContent = `+ ${w.name}`;
+        box.append(add);
+    }
+}
 
-    const bound = getWorlds(avatar);
-    const next = box.checked ? [...bound.filter((w) => w !== box.dataset.world), box.dataset.world] : bound.filter((w) => w !== box.dataset.world);
+/** 从事件里找带 data-act 的元素（兼容没有 Element 构造器的环境）。 */
+function closestAct(target, act) {
+    if (!target || typeof target.closest !== 'function') return null;
+    const el = target.closest('[data-act]');
+    if (!el) return null;
+    if (act && el.dataset?.act !== act) return null;
+    return el;
+}
 
-    const ok = await writeCardWorlds(avatar, next);
+/** 上移 / 下移 / 移除。 */
+async function onWorldAction(event) {
+    const el = closestAct(event.target);
+    if (!el) return;
+    const list = document.getElementById('world_lock_list');
+    const avatar = list?.dataset.avatar;
+    if (!avatar) return;
+
+    const name = el.dataset.world;
+    const bound = [...getWorlds(avatar)];
+    const i = bound.indexOf(name);
+    if (i < 0) return;
+
+    if (el.dataset.act === 'remove') bound.splice(i, 1);
+    else if (el.dataset.act === 'up' && i > 0) [bound[i - 1], bound[i]] = [bound[i], bound[i - 1]];
+    else if (el.dataset.act === 'down' && i < bound.length - 1) [bound[i + 1], bound[i]] = [bound[i], bound[i + 1]];
+    else return;
+
+    await commitWorlds(avatar, bound);
+}
+
+/** 搜索框里点一下添加。 */
+async function onWorldAdd(event) {
+    const el = closestAct(event.target, 'add');
+    if (!el) return;
+    const card = panelCard();
+    const avatar = card?.avatar || '';
+    if (!avatar) return;
+
+    const next = [...getWorlds(avatar), el.dataset.world];
+    const input = document.getElementById('world_lock_search');
+    if (input) input.value = '';
+    await commitWorlds(avatar, next);
+}
+
+async function commitWorlds(avatar, list) {
+    const ok = await writeCardWorlds(avatar, list);
     if (!ok) {
-        box.checked = !box.checked;
         toastr.error('写不进角色卡，世界书绑定失败', '预设锁定');
         return;
     }
-    await syncCharLore(avatar, next);
-    toast(next.length ? `已绑定 ${next.length} 本世界书` : '已解除世界书绑定');
+    await syncCharLore(avatar, list);
+    toast(list.length ? `世界书 ${list.length} 本` : '已解除世界书绑定');
     refreshWorldRow(true);
 }
 
@@ -899,7 +1042,7 @@ function startEditorWatch() {
     panel.addEventListener(
         'click',
         (event) => {
-            const target = event.target instanceof Element ? event.target.closest('.character_select') : null;
+            const target = event.target && typeof event.target.closest === 'function' ? event.target.closest('.character_select') : null;
             if (!target) return;
             setTimeout(refreshEditorRow, 300);
             setTimeout(refreshWorldRow, 500);
@@ -968,75 +1111,111 @@ function refreshEditorRow(force = false) {
     }
     sel.disabled = false; // 永远可点：禁用的下拉拿不到焦点，也就会卡在旧状态上
 
-    refreshExtraSelects(key, lock);
+    // 勾选态
+    const cbPrompts = document.getElementById('pl_enable_prompts');
+    const cbWorlds = document.getElementById('pl_enable_worlds');
+    const promptsOn = !!lock?.enable?.prompts;
+    const worldsOn = !!lock?.enable?.worlds;
+    if (cbPrompts) cbPrompts.checked = promptsOn;
+    if (cbWorlds) cbWorlds.checked = worldsOn;
+
+    const promptsInfo = document.getElementById('pl_prompts_info');
+    if (promptsInfo) {
+        const snap = lock?.prompts;
+        const [total, on] = promptOrderSummary(snap);
+        promptsInfo.textContent = snap ? `${total} 条，启用 ${on}` : '未记录';
+    }
+    const promptsActions = document.getElementById('pl_prompts_actions');
+    if (promptsActions) promptsActions.style.display = key && lock && promptsOn ? '' : 'none';
+
+    const worldsBox = document.getElementById('pl_worlds_box');
+    if (worldsBox) worldsBox.style.display = key && lock && worldsOn ? '' : 'none';
+
+    // 摘要行（收起时也能看出这张卡锁了什么）
+    const summary = document.getElementById('preset_locks_summary');
+    if (summary) {
+        if (!key) summary.textContent = '';
+        else if (!lock) summary.textContent = '未绑定：展开后选主预设与要锁定的项目';
+        else {
+            const parts = [`主预设「${lock.preset}」`];
+            if (lock.enable?.prompts && lock.prompts) {
+                const [total, on] = promptOrderSummary(lock.prompts);
+                parts.push(`提示词 ${on}/${total}`);
+            }
+            if (lock.enable?.worlds) {
+                const n = getWorlds(key).length;
+                parts.push(`世界书 ${n} 本`);
+            }
+            summary.textContent = parts.join(' · ');
+        }
+    }
 
     const hint = document.getElementById('preset_locks_hint');
-    if (hint) {
-        const extras = lock?.extra ? Object.keys(lock.extra).filter((k) => lock.extra[k]).length : 0;
-        hint.textContent = !key
-            ? '先在左侧选中一张角色卡'
-            : lock
-                ? `绑定中 · ${lock.from}${extras ? ` · 另含 ${extras} 项模板` : ''}`
-                : '在这张卡上选一个预设，立即生效并写进卡里';
-    }
+    if (hint) hint.textContent = !key ? '先在左侧选中一张角色卡' : lock ? `${lock.from}` : '';
+
+    // 未绑定时自动展开，省得用户找
+    if (key && !lock && !bodyOpen()) setBodyOpen(true);
 }
 
-/** 四个可选模板下拉：不选就不动，选了就跟着卡走。 */
-function refreshExtraSelects(key, lock) {
-    const box = document.getElementById('preset_locks_extra');
-    if (!box) return;
-
-    const parts = [];
-    for (const [apiId, label] of EXTRA_APIS) {
-        const names = extraNames(apiId);
-        const bound = lock?.extra?.[apiId] || '';
-        if (bound && !names.includes(bound)) names.push(bound);
-        const sig = `${key}|${apiId}|${bound}|${names.join(',')}`;
-        const opts = [`<option value="">（${label}：不锁定）</option>`]
-            .concat(names.map((n) => `<option value="${n}"${n === bound ? ' selected' : ''}>${n}</option>`))
-            .join('');
-        parts.push({ apiId, label, sig, opts });
-    }
-
-    const signature = parts.map((p) => p.sig).join('||');
-    if (box.dataset.sig === signature) return;
-    box.dataset.sig = signature;
-    box.innerHTML = parts
-        .map(
-            (p) =>
-                `<select class="text_pole wide100p" data-extra="${p.apiId}" title="${p.label}"${key ? '' : ' disabled'}>${p.opts}</select>`,
-        )
-        .join('');
-}
-
-async function onExtraChange(event) {
-    const sel = event.target;
-    if (!sel || !sel.dataset?.extra) return;
-    const main = document.getElementById('preset_locks_select');
-    const avatar = main?.dataset.avatar || '';
+/** 勾/取消某个锁定项。 */
+async function onEnableChange(field, checked) {
+    const sel = document.getElementById('preset_locks_select');
+    const avatar = sel?.dataset.avatar || '';
     if (!avatar) {
         toast('先在左侧选中一张角色卡', 'info');
+        refreshEditorRow(true);
         return;
     }
-    const apiId = sel.dataset.extra;
-    const label = EXTRA_APIS.find(([id]) => id === apiId)?.[1] || apiId;
-
-    const r = await setLockExtra(avatar, apiId, sel.value);
-    if (r.ok) toast(sel.value ? `${label}已锁定为「${sel.value}」` : `${label}已取消锁定`);
-    else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
-
-    refreshEditorRow(true);
-
-    applying = true;
-    try {
-        if (sel.value) {
-            const pm = getPresetManager(apiId);
-            const idx = pm?.findPreset(sel.value);
-            if (idx !== undefined && idx !== null && currentExtraName(apiId) !== sel.value) await pm.selectPreset(idx);
-        }
-    } finally {
-        applying = false;
+    const lock = getLock(avatar);
+    if (!lock || !lock.preset) {
+        toast('先选一个主预设', 'info');
+        refreshEditorRow(true);
+        return;
     }
+
+    const enable = { ...(lock.enable || {}), [field]: checked };
+    const patch = { enable };
+
+    if (field === 'prompts' && checked && !lock.prompts) {
+        const oai = await getOpenAiModule();
+        const snap = oai ? capturePromptOrder(oai) : null;
+        if (!snap) {
+            toast('读不到当前提示词顺序', 'warning');
+            refreshEditorRow(true);
+            return;
+        }
+        patch.prompts = snap;
+    }
+
+    const r = await setLock(avatar, patch);
+    if (!r.ok) toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
+    refreshEditorRow(true);
+    refreshWorldRow(true);
+
+    if (field === 'worlds') {
+        await syncCharLore(avatar, checked ? getWorlds(avatar) : []);
+    }
+    toast(checked ? '已加入锁定' : '已取消该项锁定');
+}
+
+/** 用当前活状态重新拍一张提示词顺序快照。 */
+async function onCapturePrompts() {
+    const sel = document.getElementById('preset_locks_select');
+    const avatar = sel?.dataset.avatar || '';
+    if (!avatar) return;
+    const lock = getLock(avatar);
+    if (!lock || !lock.preset) return;
+
+    const oai = await getOpenAiModule();
+    const snap = oai ? capturePromptOrder(oai) : null;
+    if (!snap) {
+        toast('读不到当前提示词顺序', 'warning');
+        return;
+    }
+    const r = await setLock(avatar, { prompts: snap, enable: { ...(lock.enable || {}), prompts: true } });
+    if (!r.ok) toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
+    else toast('提示词快照已更新');
+    refreshEditorRow(true);
 }
 
 async function onEditorChange() {
@@ -1058,7 +1237,7 @@ async function onEditorChange() {
         return;
     }
 
-    const r = await setLock(avatar, preset);
+    const r = await setLock(avatar, { preset });
     const shownName = findChar(avatar)?.name || panelCard()?.name || avatar;
     if (r.ok) toast(`角色卡「${shownName}」已绑定预设「${preset}」`);
     else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');

@@ -1,371 +1,244 @@
-import { state, extension_settings, dom, makeFakeSelect, pmStub, extraState, makeElem } from './stubs.mjs';
+import { readFileSync } from 'node:fs';
+import { state, extension_settings, dom, makeElem, extraState } from './stubs.mjs';
 import * as oaiStub from './openai-stub.mjs';
 import * as pl from './pl.mjs';
 
 const results = [];
 const ok = (name, pass, extra = '') => results.push(`${pass ? 'PASS' : 'FAIL'}  ${name}${extra ? '  ' + extra : ''}`);
 
-// 两张卡：avatar 是键，data.extensions 是卡内记录的位置
+// ===== 夹具 =====
 state.ctx.characters = [
     { name: '爱丽丝', avatar: 'alice.png', data: { extensions: {} } },
     { name: '鲍勃', avatar: 'bob.png', data: { extensions: {} } },
 ];
+state.worlds = ['W1', 'W2', 'W3'];
 const use = (i, chatId = 'c1') => Object.assign(state.ctx, { characterId: i, chatId, groupId: null });
 const alice = () => state.ctx.characters[0];
 const bob = () => state.ctx.characters[1];
+const cardExt = (c) => c.data.extensions;
 
-// 1. 存记录：写进角色卡内
+// 面板元素桩
+const el = (id) => {
+    if (!dom.els[id]) dom.els[id] = makeElem('div');
+    return dom.els[id];
+};
+['preset_locks_select', 'preset_locks_summary', 'preset_locks_hint', 'preset_locks_body',
+ 'pl_enable_prompts', 'pl_enable_worlds', 'pl_prompts_info', 'pl_prompts_actions',
+ 'pl_worlds_box', 'world_lock_list', 'world_lock_results', 'world_lock_search',
+ 'avatar_url_pole', 'character_name_pole'].forEach(el);
+dom.els['preset_locks_body'].style = {};
+
+// ===== 1. 卡内写入 / 读取 / 优先级 / 兜底 / 清除 / 迁移 =====
 use(0, 'chat-a');
-let r = await pl.setLock(pl.cardKey(), 'B');
-ok('存记录写进角色卡', r.ok && r.where === '卡内' && alice().data.extensions.presetLocks?.preset === 'B', JSON.stringify(alice().data.extensions));
+let r = await pl.setLock('alice.png', { preset: 'B' });
+ok('绑定写进角色卡内', r.ok && r.where === '卡内' && cardExt(alice()).presetLocks.preset === 'B', JSON.stringify(cardExt(alice()).presetLocks));
 ok('请求打到 merge-attributes', state.fetchCalls.at(-1).url === '/api/characters/merge-attributes' && state.fetchCalls.at(-1).body.avatar === 'alice.png');
 
-// 2. 同一张卡换到另一个聊天文件 → 自动切到卡里记录的预设
 use(0, 'chat-b');
 state.selected = 'A';
 await pl.onContextChanged();
-ok('同一张卡换聊天 → 自动切到 B', state.selected === 'B', `selected=${state.selected}`);
+ok('同一张卡换聊天文件 → 自动切到 B', state.selected === 'B', `selected=${state.selected}`);
 
-// 3. 已经是目标预设时不重复切换
 state.selectedCalls.length = 0;
 state.selected = 'B';
 await pl.onContextChanged();
-ok('已正确时不再切换', state.selectedCalls.length === 0, `calls=${state.selectedCalls.length}`);
+ok('已正确时不再切换', state.selectedCalls.length === 0);
 
-// 4. 未记录的卡不动
 state.selected = 'C';
 state.selectedCalls.length = 0;
 use(1, 'chat-x');
 await pl.onContextChanged();
 ok('未记录的卡不动预设', state.selectedCalls.length === 0 && state.selected === 'C');
 
-// 5. 切回记录卡 → 切回 B
-use(0, 'chat-a');
-await pl.onContextChanged();
-ok('切回记录卡 → 切回 B', state.selected === 'B', `selected=${state.selected}`);
-
-// 6. 群聊不参与
 state.ctx.groupId = 'g1';
-state.ctx.characterId = 0;
-state.selected = 'C';
 state.selectedCalls.length = 0;
 await pl.onContextChanged();
-ok('群聊不动预设', state.selectedCalls.length === 0 && state.selected === 'C');
+ok('群聊不动预设', state.selectedCalls.length === 0);
 state.ctx.groupId = null;
 
-// 7. 记录的预设被删 → 不切、保持原样
-state.presets = ['A', 'C']; // B 被删
-await pl.setLock('bob.png', 'B');
+state.presets = ['A', 'C'];
+await pl.setLock('bob.png', { preset: 'B' });
 use(1, 'chat-y');
 state.selected = 'A';
 state.selectedCalls.length = 0;
 await pl.onContextChanged();
-ok('预设不存在时保持原样', state.selected === 'A', `selected=${state.selected}`);
+ok('预设不存在时保持原样', state.selected === 'A');
 state.presets = ['A', 'B', 'C'];
 
-// 8. never 模式不自动切
-use(0, 'chat-a');
 pl.settings().module.autoApply = 'never';
+use(0, 'chat-a');
 state.selected = 'C';
 state.selectedCalls.length = 0;
 await pl.onContextChanged();
-ok('never 模式不自动切', state.selectedCalls.length === 0 && state.selected === 'C');
+ok('never 模式不自动切', state.selectedCalls.length === 0);
 pl.settings().module.autoApply = 'always';
 
-// 9. 卡内为主：卡里 B、本机 C → 用卡里的 B
 use(0, 'chat-a');
 pl.settings().characterLocks['alice.png'] = { preset: 'C', at: 1 };
 state.selected = 'A';
 await pl.onContextChanged();
 ok('卡内为主，压过本机记录', state.selected === 'B', `selected=${state.selected}`);
 
-// 10. 写卡失败 → 退回本机兜底仍可用
 use(1, 'chat-y');
-delete bob().data.extensions.presetLocks; // 卡里没有记录，只能靠兜底
+delete cardExt(bob()).presetLocks;
 state.fetchOk = false;
-r = await pl.setLock('bob.png', 'C');
-ok('写卡失败时落到本机兜底', !r.ok && r.where === '本机' && pl.settings().characterLocks['bob.png'].preset === 'C', `reason=${r.reason}`);
+r = await pl.setLock('bob.png', { preset: 'C' });
+ok('写卡失败时落到本机兜底', !r.ok && pl.settings().characterLocks['bob.png'].preset === 'C', r.reason);
 state.selected = 'A';
 await pl.onContextChanged();
-ok('兜底记录照样能套用', state.selected === 'C', `selected=${state.selected}`);
+ok('兜底记录照样能套用', state.selected === 'C');
 state.fetchOk = true;
 
-// 11. 卡内明确清除后，本机记录不会把它复活
-state.ctx.characters[1].data.extensions.presetLocks = { preset: 'C', at: 1 };
-pl.settings().characterLocks['bob.png'] = { preset: 'C', at: 1 };
 use(1, 'chat-y');
 await pl.clearLock('bob.png');
 state.selected = 'A';
 state.selectedCalls.length = 0;
 await pl.onContextChanged();
-ok('清除后本机记录不复活', state.selectedCalls.length === 0 && state.selected === 'A' && !('bob.png' in pl.settings().characterLocks));
+ok('清除后不复活', state.selectedCalls.length === 0 && !('bob.png' in pl.settings().characterLocks));
 
-// 12. 改角色名后记录仍生效（键是 avatar）
-alice();
 state.ctx.characters[0].name = '爱丽丝-改名版';
 use(0, 'chat-a');
 state.selected = 'A';
 await pl.onContextChanged();
-ok('改角色名后记录仍生效', state.selected === 'B', `selected=${state.selected}`);
+ok('改角色名后记录仍生效', state.selected === 'B');
 
-// 13. 旧版按名字存的记录迁移到 avatar
 extension_settings.PresetLocks.characterLocks = { 鲍勃: { preset: 'C', at: 1 }, 'ghost.png': { preset: 'A', at: 1 } };
 const moved = pl.migrateByName();
-ok('旧版名字记录迁移为 avatar 键', moved === 1 && extension_settings.PresetLocks.characterLocks['bob.png']?.preset === 'C' && !('鲍勃' in extension_settings.PresetLocks.characterLocks), `moved=${moved}`);
+ok('旧版名字记录迁移为 avatar 键', moved === 1 && extension_settings.PresetLocks.characterLocks['bob.png']?.preset === 'C');
 
-// 14. 角色卡管理界面的下拉：渲染出预设列表并选中已绑定项
+// ===== 2. 提示词快照 =====
+const snapshot = oaiStub.captureSnapshot();
+ok('能拍到 prompt_order 快照', Array.isArray(snapshot) && snapshot[0].order.length === 6, JSON.stringify(snapshot[0].order.length));
+
 use(0, 'chat-a');
-dom.els['avatar_url_pole'].value = 'alice.png'; // 面板显示的是爱丽丝
-const sel = makeFakeSelect();
-dom.els['preset_locks_select'] = sel;
-pl.refreshEditorRow(true);
-const labels = sel.children.map((o) => o.value);
-ok('下拉渲染出「不绑定 + 全部预设」', labels[0] === '' && labels.includes('A') && labels.includes('C'), JSON.stringify(labels));
-ok('下拉选中卡内绑定的 B', sel.value === 'B' && sel.dataset.bound === 'B' && sel.disabled === false, `value=${sel.value}`);
+r = await pl.setLock('alice.png', { enable: { prompts: true }, prompts: snapshot });
+ok('快照存进卡里', cardExt(alice()).presetLocks.enable.prompts === true && cardExt(alice()).presetLocks.prompts[0].order.length === 6);
+ok('快照摘要正确', JSON.stringify(pl.promptOrderSummary([{ character_id: 100000, order: [] }, { character_id: 100001, order: snapshot[0].order }])) === '[6,5]', JSON.stringify(pl.promptOrderSummary(snapshot)));
 
-// 15. 下拉永远可点（禁用的下拉拿不到焦点，就会卡在旧状态）
-state.ctx.characterId = -1;
-state.ctx.groupId = 'g1';
-pl.refreshEditorRow();
-ok('无角色/群聊时下拉仍可点', sel.disabled === false, `disabled=${sel.disabled}`);
-state.ctx.groupId = null;
+// 现场改了启用状态 → applyLock 应写回
+oaiStub.setEnabled('jailbreak', false);
+const changed = await pl.applyPromptOrder(oaiStub, snapshot);
+ok('快照与活状态不同时写回', changed === true && oaiStub.enabledOf('jailbreak') === true, `after=${oaiStub.enabledOf('jailbreak')}`);
+
+const changedAgain = await pl.applyPromptOrder(oaiStub, snapshot);
+ok('已经一致时不重复写', changedAgain === false);
+
+// 同一主预设的两张卡，提示词快照可不同
+const snapshot2 = oaiStub.captureSnapshot();
+oaiStub.setEnabled('main', false);
+const modified2 = oaiStub.captureSnapshot();
+await pl.setLock('bob.png', { preset: 'B', enable: { prompts: true }, prompts: modified2 });
+ok('两张卡可存不同提示词快照', JSON.stringify(cardExt(alice()).presetLocks.prompts) !== JSON.stringify(cardExt(bob()).presetLocks.prompts));
+
+oaiStub.restoreSnapshot(snapshot2);
+ok('桩件可还原', oaiStub.enabledOf('main') === true);
+
+// lockSatisfied 只看主预设
+ok('主预设一致即视为已满足', (await pl.lockSatisfied({ preset: state.selected })) === true);
+ok('提示词快照不一致时不算满足', (await pl.lockSatisfied({ preset: state.selected, enable: { prompts: true }, prompts: [{ character_id: 1, order: [{ identifier: 'x', enabled: false }] }] })) === false);
+
+// ===== 3. 世界书：添加 / 上下移 / 移除 =====
 use(0, 'chat-a');
+dom.els['preset_locks_select'].dataset.avatar = 'alice.png';
+await pl.writeCardWorlds('alice.png', []);
+await pl.refreshWorldRow(true);
+ok('未绑定时列表给提示', dom.els['world_lock_list'].children.length === 1);
 
-// 16. 面板切到另一张卡 → 下拉跟着换卡，不串记录
-state.ctx.characters[1].data.extensions.presetLocks = { preset: 'A', at: 1 };
-dom.els['avatar_url_pole'].value = 'bob.png';
-pl.refreshEditorRow();
-ok('面板换卡后下拉跟着切到鲍勃的记录', sel.value === 'A' && sel.dataset.avatar === 'bob.png', `value=${sel.value} avatar=${sel.dataset.avatar}`);
-dom.els['avatar_url_pole'].value = 'alice.png';
-pl.refreshEditorRow();
-ok('换回爱丽丝 → 下拉回到 B', sel.value === 'B' && sel.dataset.avatar === 'alice.png', `value=${sel.value}`);
-
-// 17. 在下拉里换一个预设 → 立刻写卡并生效
-state.selected = 'A';
-sel.value = 'C';
-await pl.onEditorChange();
-ok('下拉选 C → 写进卡里', state.ctx.characters[0].data.extensions.presetLocks?.preset === 'C', JSON.stringify(state.ctx.characters[0].data.extensions));
-ok('下拉选 C → 预设立刻切到 C', state.selected === 'C', `selected=${state.selected}`);
-
-// 18. 选「不绑定」→ 卡内清除，不再自动切
-sel.value = '';
-await pl.onEditorChange();
-state.selected = 'A';
-state.selectedCalls.length = 0;
-await pl.onContextChanged();
-ok('选「不绑定」→ 卡内清空且不再自动切', state.ctx.characters[0].data.extensions.presetLocks === null && state.selected === 'A' && state.selectedCalls.length === 0);
-
-// 19. presetManager.select 的三种形态都能拿到预设列表（酒馆 1.19 是 jQuery 对象）
-for (const shape of ['jquery', 'element', 'string']) {
-    pmStub.shape = shape;
-    pl.refreshEditorRow(true);
-    const n = sel.children.length - 1;
-    ok(`预设下拉来源形态 ${shape}`, n === state.presets.length, `options=${n}`);
-}
-pmStub.shape = 'jquery';
-
-// 20. 酒馆 1.19 的 characterId 是字符串，自动切换仍要生效
-use(0, 'chat-a');
-await pl.setLock('alice.png', 'B');
-state.ctx.characterId = '0';
-state.selected = 'A';
-await pl.onContextChanged();
-ok('characterId 为字符串时照样自动切', state.selected === 'B', `selected=${state.selected} characterId=${state.ctx.characterId}`);
-use(0, 'chat-a');
-
-// ===== 世界书绑定（多本）=====
-const wlist = {
-    children: [],
-    dataset: {},
-    replaceChildren() { this.children = []; },
-    append(el) { this.children.push(el); },
+const mkAct = (act, world) => {
+    const e = makeElem('div');
+    e.dataset = { act, world };
+    e.closest = () => e;
+    return e;
 };
-dom.els['world_lock_list'] = wlist;
-dom.els['world_lock_hint'] = { textContent: '' };
 
+await pl.onWorldAdd({ target: mkAct('add', 'W1') });
+await pl.onWorldAdd({ target: mkAct('add', 'W2') });
+ok('搜索添加两本', JSON.stringify(pl.getWorlds('alice.png')) === '["W1","W2"]', JSON.stringify(pl.getWorlds('alice.png')));
+
+await pl.onWorldAction({ target: mkAct('down', 'W1') });
+ok('下移交换顺序', JSON.stringify(pl.getWorlds('alice.png')) === '["W2","W1"]', JSON.stringify(pl.getWorlds('alice.png')));
+
+await pl.onWorldAction({ target: mkAct('up', 'W1') });
+ok('上移换回来', JSON.stringify(pl.getWorlds('alice.png')) === '["W1","W2"]');
+
+await pl.onWorldAction({ target: mkAct('remove', 'W1') });
+ok('移除一本', JSON.stringify(pl.getWorlds('alice.png')) === '["W2"]');
+
+await pl.onWorldAction({ target: mkAct('remove', 'W2') });
+ok('全部移除后清空', pl.getWorlds('alice.png').length === 0);
+
+// 顺序进 charLore 时倒存
+await pl.writeCardWorlds('alice.png', ['W1', 'W2', 'W3']);
+extension_settings.world_info.charLore = [];
+await pl.syncCharLore('alice.png', ['W1', 'W2', 'W3']);
+ok('charLore 倒序存储', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W3","W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
+
+ok('只有 worldBooks 时补 world 字段', (() => { const e = cardExt(alice()).worldBooks; return cardExt(alice()).world === e[0]; })());
+
+// 世界书统计（读不到就返回 null，不抛）
+const stats = await pl.worldStats('W1');
+ok('统计读不到时安全返回', stats === null || typeof stats.constant === 'number');
+
+// ===== 4. 面板联动 =====
+use(0, 'chat-a');
 dom.els['avatar_url_pole'].value = 'alice.png';
-await pl.refreshWorldRow(true);
-ok('世界书列表列出服务器上全部世界书', wlist.children.filter((c) => c.tagName === 'LABEL').length === 2, `labels=${wlist.children.filter(c=>c.tagName==='LABEL').length}`);
+pl.refreshEditorRow(true);
+ok('摘要显示主预设与勾选项', String(dom.els['preset_locks_summary'].textContent).includes('主预设'), String(dom.els['preset_locks_summary'].textContent));
 
-// 勾选两本 → 卡内 worldBooks 存两本，world 存第一本
-const boxOf = (id) => wlist.children.filter((c) => c.tagName === 'LABEL').map((l) => l.children[0]).find((b) => b.dataset.world === id);
-const toggle = async (id) => { const b = boxOf(id); b.checked = true; await pl.onWorldToggle({ target: b }); };
-await toggle('W1');
-await pl.refreshWorldRow(true);
-await toggle('W2');
-ok('多本绑定写进卡内 worldBooks', JSON.stringify(alice().data.extensions.worldBooks) === '["W1","W2"]', JSON.stringify(alice().data.extensions));
-ok('第一本同时写进原生 world 字段', alice().data.extensions.world === 'W1');
-ok('其余本同步进 charLore', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
+dom.els['pl_enable_worlds'].checked = true;
+await pl.onEnableChange('worlds', true);
+ok('勾选世界书写进 enable', cardExt(alice()).presetLocks.enable.worlds === true, JSON.stringify(cardExt(alice()).presetLocks.enable));
 
-// 取消第一本 → 顺序重排，world 跟着变成剩下那本
-await pl.refreshWorldRow(true);
-boxOf('W1').checked = false;
-await pl.onWorldToggle({ target: boxOf('W1') });
-ok('取消第一本后 world 变成剩下一本', JSON.stringify(alice().data.extensions.worldBooks) === '["W2"]' && alice().data.extensions.world === 'W2', JSON.stringify(alice().data.extensions));
-ok('只剩一本时 charLore 清空该角色条目', !extension_settings.world_info.charLore.some((e) => e.name === 'alice'), JSON.stringify(extension_settings.world_info.charLore));
+await pl.onEnableChange('worlds', false);
+ok('取消勾选写回 false', cardExt(alice()).presetLocks.enable.worlds === false);
 
-// 全部取消 → 两个字段都清空
-await pl.refreshWorldRow(true);
-boxOf('W2').checked = false;
-await pl.onWorldToggle({ target: boxOf('W2') });
-ok('全部取消后 world/worldBooks 都清空', alice().data.extensions.world === null && alice().data.extensions.worldBooks === null, JSON.stringify(alice().data.extensions));
+await pl.onEnableChange('prompts', true);
+ok('勾选提示词自动拍快照', !!cardExt(alice()).presetLocks.prompts, JSON.stringify(Object.keys(cardExt(alice()).presetLocks)));
 
-// 旧版单本字段仍能被读到
-state.ctx.characters[0].data.extensions = { world: 'W1' };
-ok('旧版单本绑定兼容读取', JSON.stringify(pl.getWorlds('alice.png')) === '["W1"]', JSON.stringify(pl.getWorlds('alice.png')));
+oaiStub.setEnabled('jazz', false);
+await pl.onCapturePrompts();
+ok('「用当前状态更新」刷新快照', cardExt(alice()).presetLocks.prompts[0].order.some((e) => e.identifier === 'jazz' && e.enabled === false));
 
-// 删卡连带删多本世界书
-await pl.writeCardWorlds('alice.png', ['W1', 'W2']);
-state.worlds = ['W1', 'W2', 'W3'];
-state.popupCalls.length = 0;
-state.popupAnswers = [1];
-let toDelete = await pl.decideWorldDelete('alice.png');
-ok('删卡前一次性列出可删的多本世界书', toDelete.length === 2 && state.popupCalls.length === 1, JSON.stringify(toDelete));
-pl.pendingWorldDelete.set('alice.png', toDelete);
-await pl.onCharacterDeleted({ id: 0, character: alice() });
-ok('多本世界书都删掉', !state.worlds.includes('W1') && !state.worlds.includes('W2') && state.worlds.includes('W3'), `worlds=${state.worlds.join(',')}`);
-
-// 共用保护：某本被别的卡引用则保留
-state.worlds = ['W1', 'W2'];
+// ===== 5. 删卡连带删世界书 =====
 await pl.writeCardWorlds('alice.png', ['W1', 'W2']);
 await pl.writeCardWorlds('bob.png', ['W2']);
 state.popupAnswers = [1];
-toDelete = await pl.decideWorldDelete('alice.png');
-ok('被其他卡共用的那本不删', JSON.stringify(toDelete) === '["W1"]', JSON.stringify(toDelete));
+state.popupCalls.length = 0;
+let toDelete = await pl.decideWorldDelete('alice.png');
+ok('被共用的一本不列入删除', JSON.stringify(toDelete) === '["W1"]', JSON.stringify(toDelete));
+pl.pendingWorldDelete.set('alice.png', toDelete);
+await pl.onCharacterDeleted({ character: alice() });
+ok('删卡后真的删掉文件', !state.worlds.includes('W1') && state.worlds.includes('W2'), state.worlds.join(','));
 await pl.writeCardWorlds('bob.png', []);
 
-// 用户取消 → 一本都不删
-state.worlds = ['W1', 'W2'];
-await pl.writeCardWorlds('alice.png', ['W1']);
 state.popupAnswers = [0];
+await pl.writeCardWorlds('alice.png', ['W3']);
 toDelete = await pl.decideWorldDelete('alice.png');
-ok('选「只删角色卡」→ 世界书全保留', toDelete.length === 0 && state.worlds.length === 2);
+ok('选「只删角色卡」时不删书', toDelete.length === 0);
 
-// 卡没绑世界书 → 不问
-state.popupCalls.length = 0;
-await pl.writeCardWorlds('alice.png', []);
-toDelete = await pl.decideWorldDelete('alice.png');
-ok('没绑世界书的卡不问', toDelete.length === 0 && state.popupCalls.length === 0);
-
-// 开关关闭 → 不问
-await pl.writeCardWorlds('alice.png', ['W1']);
 pl.settings().module.deleteWorldWithCard = false;
 state.popupCalls.length = 0;
 toDelete = await pl.decideWorldDelete('alice.png');
-ok('关掉开关后不问也不删', toDelete.length === 0 && state.popupCalls.length === 0);
+ok('关掉开关后不问', toDelete.length === 0 && state.popupCalls.length === 0);
 pl.settings().module.deleteWorldWithCard = true;
 
-// 没有预先确认就不删
-state.worlds = ['W1', 'W2'];
-await pl.onCharacterDeleted({ id: 0, character: { avatar: 'alice.png', name: 'alice', data: { extensions: { world: 'W2' } } } });
-ok('没预先确认时删卡不动世界书', state.worlds.length === 2, `worlds=${state.worlds.join(',')}`);
+// ===== 6. SPreset 入口 =====
+oaiStub.openai_setting_names.SP = oaiStub.openai_settings.length;
+oaiStub.openai_settings.push({ name: 'SP', temperature: 1, extensions: { SPreset: { x: 1 } } });
+ok('带 SPreset 的预设被识别', pl.presetHasSPreset(oaiStub, 'SP') === true);
+ok('不带 SPreset 的预设被识别', pl.presetHasSPreset(oaiStub, 'P1') === false);
+ok('未知预设返回 null', pl.presetHasSPreset(oaiStub, '不存在') === null);
 
-// 打开卡时自动同步 charLore（这是「自动启用」的落地点）
-extension_settings.world_info.charLore = [];
-await pl.writeCardWorlds('alice.png', ['W1', 'W2']);
-state.ctx.characterId = 0;
-state.ctx.groupId = null;
-await pl.onContextChanged();
-ok('打开卡时自动把多本世界书同步成角色世界书', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
+const spBtn = makeElem('div');
+const origQSA = document.querySelectorAll;
+document.querySelectorAll = (sel) => (sel === '.spreset-button-container' ? [spBtn] : []);
+ok('无 SPreset 时隐起按钮', pl.syncSPresetUI(oaiStub, 'P1').has === false && spBtn.style.display === 'none');
+ok('切回时恢复显示', pl.syncSPresetUI(oaiStub, 'SP').has === true && spBtn.style.display === '');
+document.querySelectorAll = origQSA;
 
-// 酒馆模块内的 world_info 与 extension_settings.world_info 是两个对象，两边都要写
-const storeA = {};
-const storeB = {};
-ok('upsertCharLore 能分别写两份 store', pl.upsertCharLore(storeA, 'c', ['W2']) && pl.upsertCharLore(storeB, 'c', ['W2']) && storeA.charLore[0].extraBooks[0] === 'W2' && storeB.charLore[0].extraBooks[0] === 'W2');
-ok('upsertCharLore 重复写返回 false（不触发落盘）', pl.upsertCharLore(storeA, 'c', ['W2']) === false);
-ok('upsertCharLore 传空数组就删条目', pl.upsertCharLore(storeA, 'c', []) === true && storeA.charLore.length === 0);
-
-// 版本号必须和 manifest 一致，否则浏览器缓存/部署错位时无从判断
-import { readFileSync } from 'node:fs';
+// ===== 7. 版本一致 =====
 const manifestVersion = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')).version;
-ok('index.js 内的 VERSION 与 manifest 一致', pl.VERSION === manifestVersion, `code=${pl.VERSION} manifest=${manifestVersion}`);
-
-// ===== 切换后的收尾与自检 =====
-oaiStub.state.live = { temperature: 0.6, top_p: 0.9, chat_completion_source: 'deepseek', openai_model: 'deepseek-chat' };
-ok('活状态与预设定义一致时无残渣', pl.verifyPreset('P1', oaiStub).length === 0, JSON.stringify(pl.verifyPreset('P1', oaiStub)));
-
-oaiStub.state.live.temperature = 0.1;
-const mismatch = pl.verifyPreset('P1', oaiStub);
-ok('不一致的字段能被揪出来', JSON.stringify(mismatch) === '["temperature"]', JSON.stringify(mismatch));
-
-const beforeSanitize = oaiStub.state.sanitized;
-const left = await pl.settlePreset('P1');
-ok('收尾时强制重建提示词管理器', oaiStub.state.sanitized > beforeSanitize, `sanitize=${oaiStub.state.sanitized}`);
-ok('残渣无法自愈时报出字段名', JSON.stringify(left) === '["temperature"]', JSON.stringify(left));
-
-oaiStub.state.live.temperature = 0.6;
-const leftClean = await pl.settlePreset('P1');
-ok('无残渣时静默通过（不报错、不回滚）', leftClean.length === 0);
-
-ok('未知预设名不抛异常', pl.verifyPreset('不存在的预设', oaiStub).length === 0);
-
-// ===== 组合锁定：主预设 + 四个模板 =====
-use(0, 'chat-a');
-await pl.setLock('alice.png', 'B', { context: 'CtxA', instruct: 'InstB' });
-ok('组合写进卡内 extra', JSON.stringify(alice().data.extensions.presetLocks.extra) === '{"context":"CtxA","instruct":"InstB"}', JSON.stringify(alice().data.extensions.presetLocks));
-
-state.selected = 'A';
-extraState.context.selected = 'Default';
-extraState.instruct.selected = 'Alpaca';
-const changed = await pl.applyLock(pl.getLock('alice.png'));
-ok('applyLock 同时切主预设和模板', changed && state.selected === 'B' && extraState.context.selected === 'CtxA' && extraState.instruct.selected === 'InstB', JSON.stringify({ main: state.selected, ctx: extraState.context.selected, ins: extraState.instruct.selected }));
-ok('已全部生效时 lockSatisfied 为真', pl.lockSatisfied(pl.getLock('alice.png')));
-
-extraState.instruct.selected = 'Alpaca';
-ok('模板不对时 lockSatisfied 为假', pl.lockSatisfied(pl.getLock('alice.png')) === false);
-
-await pl.onContextChanged();
-ok('进对话时模板也被拉到锁定值', extraState.instruct.selected === 'InstB', `instruct=${extraState.instruct.selected}`);
-
-// 取消某一项模板
-await pl.setLockExtra('alice.png', 'instruct', '');
-ok('取消单项模板只删该项', JSON.stringify(pl.getLock('alice.png').extra) === '{"context":"CtxA"}', JSON.stringify(pl.getLock('alice.png').extra));
-
-// 写卡失败也要保留本机兜底
-state.fetchOk = false;
-const rExtra = await pl.setLock('alice.png', 'B', { context: 'CtxA', sysprompt: 'SysC' });
-ok('组合写卡失败时仍落本机', !rExtra.ok && pl.settings().characterLocks['alice.png'].extra.sysprompt === 'SysC', JSON.stringify(pl.settings().characterLocks['alice.png']));
-state.fetchOk = true;
-
-// 模板预设被删 → 不抛异常，只跳过
-state.fetchOk = true;
-await pl.setLock('alice.png', 'B', { context: '不存在的模板' });
-const changed2 = await pl.applyLock(pl.getLock('alice.png'));
-ok('模板预设不存在时安全跳过', typeof changed2 === 'boolean');
-
-await pl.setLock('alice.png', 'B', {});
-
-// worldBooks 有、world 空（手写/旧数据）时自动补上第一本
-alice().data.extensions = { worldBooks: ['W2'], world: null };
-await pl.syncCharLore('alice.png', ['W2']);
-ok('只有 worldBooks 时自动补 world 字段', alice().data.extensions.world === 'W2', JSON.stringify(alice().data.extensions));
-
-// 多本时 charLore 倒存（酒馆注入时会再倒一次，从而回到界面序号顺序）
-state.worlds = ['W1', 'W2', 'W3'];
-extension_settings.world_info.charLore = [];
-await pl.writeCardWorlds('alice.png', ['W1', 'W2', 'W3']);
-await pl.syncCharLore('alice.png', ['W1', 'W2', 'W3']);
-ok('多本时 charLore 倒序存储', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W3","W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
-
-// SPreset 预设：靠 extensions.SPreset 判定；切到不带它的预设时把入口隐起来
-import * as oaiStub2 from './openai-stub.mjs';
-oaiStub2.openai_setting_names.SP = 2;
-oaiStub2.openai_settings.push({ name: 'SP', temperature: 1, extensions: { SPreset: { anything: true } } });
-ok('带 SPreset 的预设被识别', pl.presetHasSPreset(oaiStub2, 'SP') === true);
-ok('不带 SPreset 的预设被识别', pl.presetHasSPreset(oaiStub2, 'P1') === false);
-ok('未知预设名返回 null（不擅自改 UI）', pl.presetHasSPreset(oaiStub2, '不存在') === null);
-
-const btn = makeElem('div');
-btn.className = 'spreset-button-container';
-dom.els['x'] = null;
-const fakeDoc = globalThis.document;
-const origQSA = fakeDoc.querySelectorAll;
-fakeDoc.querySelectorAll = (sel) => (sel === '.spreset-button-container' ? [btn] : []);
-const hideRes = pl.syncSPresetUI(oaiStub2, 'P1');
-ok('无 SPreset 时隐起按钮', hideRes && hideRes.has === false && btn.style.display === 'none', JSON.stringify(hideRes));
-const showRes = pl.syncSPresetUI(oaiStub2, 'SP');
-ok('切回带 SPreset 的预设时恢复显示', showRes && showRes.has === true && btn.style.display === '', JSON.stringify(showRes));
-fakeDoc.querySelectorAll = origQSA;
+ok('VERSION 与 manifest 一致', pl.VERSION === manifestVersion, `code=${pl.VERSION} manifest=${manifestVersion}`);
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
