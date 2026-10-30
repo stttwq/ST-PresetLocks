@@ -357,6 +357,19 @@ ok('拍快照优先取预设定义', fromDef && fromDef[0].order.length === 3, J
 ok('预设定义摘要可算', JSON.stringify(pl.presetPromptSummary(oaiStub, 'DEF')) === '[3,2]', JSON.stringify(pl.presetPromptSummary(oaiStub, 'DEF')));
 ok('无定义时退回活状态', (pl.capturePromptOrder(oaiStub, '不存在') || []).length > 0);
 
+// captureForCard 策略：用户改过取活状态，未改过取定义
+oaiStub.openai_setting_names.PICK = oaiStub.openai_settings.length;
+oaiStub.openai_settings.push({ name: 'PICK', prompt_order: [{ character_id: 100001, order: [{ identifier: 'def', enabled: true }] }] });
+pl.resetLastAppliedPromptSig?.();
+const pickLive = pl.captureForCard(oaiStub, 'alice.png', 'PICK');
+ok('无写入记录时取活状态', pickLive[0].order[0].identifier === 'main', pickLive[0].order[0].identifier);
+pl.setLastAppliedSig('alice.png', JSON.stringify(oaiStub.live.prompt_order));
+const pickDef = pl.captureForCard(oaiStub, 'alice.png', 'PICK');
+ok('活状态等于我们刚写入时仍取定义', pickDef[0].order[0].identifier === 'def', pickDef[0].order[0].identifier);
+oaiStub.live.prompt_order[0].order[0].enabled = false;
+const pickChanged = pl.captureForCard(oaiStub, 'alice.png', 'PICK');
+ok('用户改过时取活状态', pickChanged[0].order[0].enabled === false, JSON.stringify(pickChanged[0].order[0]));
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');

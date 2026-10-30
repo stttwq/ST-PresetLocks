@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.2.4'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.2.5'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -297,6 +297,8 @@ async function writeCardWorlds(avatar, list) {
 let wiModulePromise = null;
 let oaiRef = null;
 let liveCompareQueued = false;
+/** 本扩展最后一次写进活状态的提示词签名，用来分辨「活状态是用户改的还是我们写的」。 */
+let lastAppliedPromptSig = { avatar: '', sig: '' };
 
 /** 动态 import 只做一次：每轮扫描都重新 import 会白跑一趟模块解析。 */
 async function getWorldInfoModule() {
@@ -916,6 +918,34 @@ function capturePromptOrder(oai, presetName) {
     }
 }
 
+/**
+ * 拍快照时的取值策略：
+ * - 活状态与「我们上次写入的」一致 → 说明用户没动过，取预设定义（避开自己回写造成的旧数字）
+ * - 活状态被用户改过 → 取活状态（允许同一预设、不同卡锁不同开关与顺序）
+ */
+function captureForCard(oai, avatar, presetName) {
+    try {
+        const live = typeof oai.getChatCompletionPreset === 'function' ? oai.getChatCompletionPreset() : null;
+        const po = live && Array.isArray(live.prompt_order) ? live.prompt_order : null;
+        if (!po || !po.length) return capturePromptOrder(oai, presetName);
+        const sig = JSON.stringify(po);
+        const untouched = lastAppliedPromptSig.avatar === avatar && lastAppliedPromptSig.sig === sig;
+        if (!untouched || avatar === '') return JSON.parse(JSON.stringify(po));
+        return capturePromptOrder(oai, presetName);
+    } catch {
+        return capturePromptOrder(oai, presetName);
+    }
+}
+
+/** 供测试用：重置「上次写入的签名」与手动设置。 */
+function resetLastAppliedPromptSig() {
+    lastAppliedPromptSig = { avatar: '', sig: '' };
+}
+
+function setLastAppliedSig(avatar, sig) {
+    lastAppliedPromptSig = { avatar, sig };
+}
+
 /** 预设定义里的 prompt_order 摘要；拿不到返回 null。 */
 function presetPromptSummary(oai, presetName) {
     try {
@@ -1040,6 +1070,15 @@ async function runContextChanged() {
         applying = true;
         try {
             if (await applyLock(lock)) toast(`角色卡「${name}」→ 预设「${lock.preset}」`);
+            if (lock.enable?.prompts) {
+                try {
+                    const oai = await getOpenAiModule();
+                    const live = oai?.getChatCompletionPreset?.();
+                    if (live?.prompt_order) lastAppliedPromptSig = { avatar: key, sig: JSON.stringify(live.prompt_order) };
+                } catch {
+                    /* ignore */
+                }
+            }
         } finally {
             applying = false;
         }
@@ -1645,7 +1684,7 @@ async function onEnableChange(field, checked) {
 
     if (field === 'prompts' && checked && !lock.prompts) {
         const oai = await getOpenAiModule();
-        const snap = oai ? capturePromptOrder(oai, lock.preset) : null;
+        const snap = oai ? captureForCard(oai, avatar, lock.preset) : null;
         if (!snap) {
             toast('读不到当前提示词顺序', 'warning');
             refreshEditorRow(true);
@@ -1690,7 +1729,7 @@ async function onCapturePrompts() {
     if (!lock || !lock.preset) return;
 
     const oai = await getOpenAiModule();
-    const snap = oai ? capturePromptOrder(oai, lock.preset) : null;
+    const snap = oai ? captureForCard(oai, avatar, lock.preset) : null;
     if (!snap) {
         toast('读不到当前提示词顺序', 'warning', true);
         flash(document.getElementById('pl_prompts_info'), '读取失败');
@@ -1754,7 +1793,7 @@ async function onEditorChange() {
     const patch = { preset };
     if (!existing?.enable) {
         const oai = await getOpenAiModule();
-        const snap = oai ? capturePromptOrder(oai, preset) : null;
+        const snap = oai ? captureForCard(oai, avatar, preset) : null;
         if (snap) {
             patch.prompts = snap;
             patch.enable = { prompts: true, worlds: false };
