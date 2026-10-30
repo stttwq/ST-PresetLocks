@@ -37,7 +37,29 @@ export function getContext() {
 
 export const pmStub = { shape: 'jquery' };
 
-export function getPresetManager() {
+/** 四个附属模板管理器（上下文/指令/系统提示/推理）的桩状态 */
+export const extraState = {
+    context: { names: ['Default', 'CtxA'], selected: 'Default', calls: [] },
+    instruct: { names: ['Alpaca', 'InstB'], selected: 'Alpaca', calls: [] },
+    sysprompt: { names: ['Neutral - Chat', 'SysC'], selected: 'Neutral - Chat', calls: [] },
+    reasoning: { names: ['Think XML', 'ReasonD'], selected: 'Think XML', calls: [] },
+};
+
+export function getPresetManager(apiId = '') {
+    if (apiId && extraState[apiId]) {
+        const st = extraState[apiId];
+        return {
+            get select() {
+                return '#fake-' + apiId + '-select';
+            },
+            getSelectedPresetName: () => st.selected,
+            findPreset: (name) => (st.names.includes(name) ? st.names.indexOf(name) : undefined),
+            async selectPreset(index) {
+                st.calls.push(st.names[index]);
+                st.selected = st.names[index];
+            },
+        };
+    }
     return {
         get select() {
             const opts = state.presets.map((p) => ({ text: p }));
@@ -125,8 +147,12 @@ export function makeElem(tag) {
 
 globalThis.document = {
     getElementById: (id) => dom.els[id] || null,
-    querySelector: (sel) =>
-        sel === '#fake-preset-select' ? { options: state.presets.map((p) => ({ text: p })) } : null,
+    querySelector: (sel) => {
+        if (sel === '#fake-preset-select') return { options: state.presets.map((p) => ({ text: p })) };
+        const m = /^#fake-(context|instruct|sysprompt|reasoning)-select$/.exec(sel);
+        if (m) return { options: extraState[m[1]].names.map((n) => ({ text: n })) };
+        return null;
+    },
     querySelectorAll: () => [],
     createElement: (tag) => makeElem(tag),
 };

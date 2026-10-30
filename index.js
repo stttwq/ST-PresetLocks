@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '1.7.0'; // 与 manifest.json 同步（测试会校）
+const VERSION = '1.8.0'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -46,12 +46,6 @@ function saveSettings() {
 
 function getLocalLock(key) {
     return key ? settings().characterLocks[key] || null : null;
-}
-
-function setLocalLock(key, preset) {
-    if (!key) return;
-    settings().characterLocks[key] = { preset, at: Date.now() };
-    saveSettings();
 }
 
 function dropLocalLock(key) {
@@ -142,9 +136,28 @@ function getLock(key) {
     return local ? { ...local, from: '本机' } : null;
 }
 
-async function setLock(key, preset) {
-    setLocalLock(key, preset); // 先落本机，写卡失败也不会丢
-    const value = { preset, at: Date.now() };
+async function setLock(key, preset, extra) {
+    // 先落本机，写卡失败也不会丢
+    const prev = getLocalLock(key);
+    const merged = { preset, at: Date.now() };
+    const nextExtra = extra !== undefined ? extra : prev?.extra;
+    if (nextExtra && Object.keys(nextExtra).some((k) => nextExtra[k])) merged.extra = nextExtra;
+    settings().characterLocks[key] = merged;
+    saveSettings();
+    return await writeLockToCard(key, merged);
+}
+
+/** 只改某一种模板的绑定，其余保持不动。 */
+async function setLockExtra(key, apiId, value) {
+    const lock = getLock(key);
+    if (!lock || !lock.preset) return { ok: false, where: '本机', reason: '还没有主预设绑定' };
+    const extra = { ...(lock.extra || {}) };
+    if (value) extra[apiId] = value;
+    else delete extra[apiId];
+    return await setLock(key, lock.preset, extra);
+}
+
+async function writeLockToCard(key, value) {
     try {
         const ok = await postCardLock(key, value);
         if (ok) {
@@ -540,6 +553,66 @@ function verifyPreset(name, oai) {
     }
 }
 
+/** 可一并锁定的其它模板管理器：切主预设不会带它们，得单独切。 */
+const EXTRA_APIS = [
+    ['context', '上下文模板'],
+    ['instruct', '指令模板'],
+    ['sysprompt', '系统提示'],
+    ['reasoning', '推理格式'],
+];
+
+function extraNames(apiId) {
+    const el = presetSelectEl(apiId);
+    if (!el || !el.options) return [];
+    return Array.from(el.options)
+        .map((o) => o.text.trim())
+        .filter(Boolean);
+}
+
+function currentExtraName(apiId) {
+    const pm = getPresetManager(apiId);
+    try {
+        return pm ? pm.getSelectedPresetName() || '' : '';
+    } catch {
+        return '';
+    }
+}
+
+/** 按锁定的组合切换：主预设 + 各模板。返回是否真的变了。 */
+async function applyLock(lock) {
+    if (!lock) return false;
+    let changed = false;
+
+    if (lock.preset) changed = (await applyPreset(lock.preset)) || changed;
+
+    for (const [apiId, label] of EXTRA_APIS) {
+        const want = lock.extra?.[apiId];
+        if (!want) continue;
+        const pm = getPresetManager(apiId);
+        if (!pm) continue;
+        if (currentExtraName(apiId) === want) continue;
+        const idx = pm.findPreset(want);
+        if (idx === undefined || idx === null) {
+            toast(`${label}「${want}」已不存在`, 'warning');
+            continue;
+        }
+        await pm.selectPreset(idx);
+        changed = true;
+    }
+    return changed;
+}
+
+/** 锁定是否已经全部生效。 */
+function lockSatisfied(lock) {
+    if (!lock) return true;
+    if (lock.preset && lock.preset !== currentPresetName()) return false;
+    for (const [apiId] of EXTRA_APIS) {
+        const want = lock.extra?.[apiId];
+        if (want && currentExtraName(apiId) !== want) return false;
+    }
+    return true;
+}
+
 async function onContextChanged() {
     // 打开卡/聊天时先把卡内绑定的多本世界书同步成酒馆的「角色世界书」，让它自动生效
     const activeKey = cardKey();
@@ -552,7 +625,7 @@ async function onContextChanged() {
 
     const lock = getLock(key);
     if (!lock || !lock.preset) return;
-    if (lock.preset === currentPresetName()) return;
+    if (lockSatisfied(lock)) return;
 
     const mode = settings().module.autoApply;
     if (mode === AUTO.NEVER) return;
@@ -563,7 +636,7 @@ async function onContextChanged() {
     if (mode === AUTO.ALWAYS) {
         applying = true;
         try {
-            if (await applyPreset(lock.preset)) toast(`角色卡「${name}」→ 预设「${lock.preset}」`);
+            if (await applyLock(lock)) toast(`角色卡「${name}」→ 预设「${lock.preset}」`);
         } finally {
             applying = false;
         }
@@ -583,7 +656,7 @@ async function onContextChanged() {
             '要切换吗？',
             { okButton: '切换预设', cancelButton: '保持不动' },
         );
-        if (result === POPUP_RESULT.AFFIRMATIVE) await applyPreset(lock.preset);
+        if (result === POPUP_RESULT.AFFIRMATIVE) await applyLock(lock);
     } finally {
         applying = false;
     }
@@ -596,8 +669,8 @@ function popupOpen() {
 // ===== 角色卡管理界面里的预设下拉 =====
 
 /** 酒馆的 presetManager.select 在不同版本里是选择器字符串 / 原生 select / jQuery 对象，三种都兼容。 */
-function presetSelectEl() {
-    const pm = getPresetManager();
+function presetSelectEl(apiId = '') {
+    const pm = getPresetManager(apiId);
     const s = pm?.select;
     if (!s) return null;
     if (typeof s === 'string') return document.querySelector(s);
@@ -607,8 +680,8 @@ function presetSelectEl() {
 }
 
 /** 直接读酒馆自己的预设下拉，拿到的就是当前 API 可用的预设名，不猜接口形状。 */
-function presetNames() {
-    const el = presetSelectEl();
+function presetNames(apiId = '') {
+    const el = presetSelectEl(apiId);
     if (!el || !el.options) return [];
     return Array.from(el.options)
         .map((o) => o.text.trim())
@@ -629,7 +702,8 @@ function injectEditorRow() {
             <span class="opacity50p font70p" style="margin-left:6px">v${VERSION}</span>
             <span id="preset_locks_hint" class="opacity50p font70p"></span>
         </div>
-        <select id="preset_locks_select" class="text_pole wide100p"></select>`;
+        <select id="preset_locks_select" class="text_pole wide100p"></select>
+        <div id="preset_locks_extra" class="flex gap1 flexFlowColumn wide100p" style="margin-top:4px"></div>`;
     anchor.parentElement.insertBefore(row, anchor);
 
     const worldRow = document.createElement('div');
@@ -651,6 +725,9 @@ function injectEditorRow() {
     sel.addEventListener('pointerdown', () => refreshEditorRow());
     sel.addEventListener('focus', () => refreshEditorRow());
     sel.addEventListener('change', () => onEditorChange());
+
+    const extra = row.querySelector('#preset_locks_extra');
+    extra.addEventListener('change', (event) => onExtraChange(event));
     refreshEditorRow(true);
     refreshWorldRow(true);
     startEditorWatch();
@@ -845,13 +922,74 @@ function refreshEditorRow(force = false) {
     }
     sel.disabled = false; // 永远可点：禁用的下拉拿不到焦点，也就会卡在旧状态上
 
+    refreshExtraSelects(key, lock);
+
     const hint = document.getElementById('preset_locks_hint');
     if (hint) {
+        const extras = lock?.extra ? Object.keys(lock.extra).filter((k) => lock.extra[k]).length : 0;
         hint.textContent = !key
             ? '先在左侧选中一张角色卡'
             : lock
-                ? `绑定中 · ${lock.from}`
+                ? `绑定中 · ${lock.from}${extras ? ` · 另含 ${extras} 项模板` : ''}`
                 : '在这张卡上选一个预设，立即生效并写进卡里';
+    }
+}
+
+/** 四个可选模板下拉：不选就不动，选了就跟着卡走。 */
+function refreshExtraSelects(key, lock) {
+    const box = document.getElementById('preset_locks_extra');
+    if (!box) return;
+
+    const parts = [];
+    for (const [apiId, label] of EXTRA_APIS) {
+        const names = extraNames(apiId);
+        const bound = lock?.extra?.[apiId] || '';
+        if (bound && !names.includes(bound)) names.push(bound);
+        const sig = `${key}|${apiId}|${bound}|${names.join(',')}`;
+        const opts = [`<option value="">（${label}：不锁定）</option>`]
+            .concat(names.map((n) => `<option value="${n}"${n === bound ? ' selected' : ''}>${n}</option>`))
+            .join('');
+        parts.push({ apiId, label, sig, opts });
+    }
+
+    const signature = parts.map((p) => p.sig).join('||');
+    if (box.dataset.sig === signature) return;
+    box.dataset.sig = signature;
+    box.innerHTML = parts
+        .map(
+            (p) =>
+                `<select class="text_pole wide100p" data-extra="${p.apiId}" title="${p.label}"${key ? '' : ' disabled'}>${p.opts}</select>`,
+        )
+        .join('');
+}
+
+async function onExtraChange(event) {
+    const sel = event.target;
+    if (!sel || !sel.dataset?.extra) return;
+    const main = document.getElementById('preset_locks_select');
+    const avatar = main?.dataset.avatar || '';
+    if (!avatar) {
+        toast('先在左侧选中一张角色卡', 'info');
+        return;
+    }
+    const apiId = sel.dataset.extra;
+    const label = EXTRA_APIS.find(([id]) => id === apiId)?.[1] || apiId;
+
+    const r = await setLockExtra(avatar, apiId, sel.value);
+    if (r.ok) toast(sel.value ? `${label}已锁定为「${sel.value}」` : `${label}已取消锁定`);
+    else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
+
+    refreshEditorRow(true);
+
+    applying = true;
+    try {
+        if (sel.value) {
+            const pm = getPresetManager(apiId);
+            const idx = pm?.findPreset(sel.value);
+            if (idx !== undefined && idx !== null && currentExtraName(apiId) !== sel.value) await pm.selectPreset(idx);
+        }
+    } finally {
+        applying = false;
     }
 }
 
@@ -882,7 +1020,7 @@ async function onEditorChange() {
 
     applying = true;
     try {
-        await applyPreset(preset);
+        await applyLock(getLock(avatar) || { preset });
     } finally {
         applying = false;
     }
@@ -996,7 +1134,7 @@ async function showPanel() {
         button('▶ 立即应用', async () => {
             const lock = getLock(key);
             if (!lock) { toast('这张卡没有记录', 'info'); return; }
-            if (await applyPreset(lock.preset)) {
+            if (await applyLock(lock)) {
                 toast(`已切到「${lock.preset}」`);
                 refresh();
             }

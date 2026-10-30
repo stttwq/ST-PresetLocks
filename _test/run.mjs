@@ -1,4 +1,4 @@
-import { state, extension_settings, dom, makeFakeSelect, pmStub } from './stubs.mjs';
+import { state, extension_settings, dom, makeFakeSelect, pmStub, extraState } from './stubs.mjs';
 import * as oaiStub from './openai-stub.mjs';
 import * as pl from './pl.mjs';
 
@@ -298,6 +298,42 @@ const leftClean = await pl.settlePreset('P1');
 ok('无残渣时静默通过（不报错、不回滚）', leftClean.length === 0);
 
 ok('未知预设名不抛异常', pl.verifyPreset('不存在的预设', oaiStub).length === 0);
+
+// ===== 组合锁定：主预设 + 四个模板 =====
+use(0, 'chat-a');
+await pl.setLock('alice.png', 'B', { context: 'CtxA', instruct: 'InstB' });
+ok('组合写进卡内 extra', JSON.stringify(alice().data.extensions.presetLocks.extra) === '{"context":"CtxA","instruct":"InstB"}', JSON.stringify(alice().data.extensions.presetLocks));
+
+state.selected = 'A';
+extraState.context.selected = 'Default';
+extraState.instruct.selected = 'Alpaca';
+const changed = await pl.applyLock(pl.getLock('alice.png'));
+ok('applyLock 同时切主预设和模板', changed && state.selected === 'B' && extraState.context.selected === 'CtxA' && extraState.instruct.selected === 'InstB', JSON.stringify({ main: state.selected, ctx: extraState.context.selected, ins: extraState.instruct.selected }));
+ok('已全部生效时 lockSatisfied 为真', pl.lockSatisfied(pl.getLock('alice.png')));
+
+extraState.instruct.selected = 'Alpaca';
+ok('模板不对时 lockSatisfied 为假', pl.lockSatisfied(pl.getLock('alice.png')) === false);
+
+await pl.onContextChanged();
+ok('进对话时模板也被拉到锁定值', extraState.instruct.selected === 'InstB', `instruct=${extraState.instruct.selected}`);
+
+// 取消某一项模板
+await pl.setLockExtra('alice.png', 'instruct', '');
+ok('取消单项模板只删该项', JSON.stringify(pl.getLock('alice.png').extra) === '{"context":"CtxA"}', JSON.stringify(pl.getLock('alice.png').extra));
+
+// 写卡失败也要保留本机兜底
+state.fetchOk = false;
+const rExtra = await pl.setLock('alice.png', 'B', { context: 'CtxA', sysprompt: 'SysC' });
+ok('组合写卡失败时仍落本机', !rExtra.ok && pl.settings().characterLocks['alice.png'].extra.sysprompt === 'SysC', JSON.stringify(pl.settings().characterLocks['alice.png']));
+state.fetchOk = true;
+
+// 模板预设被删 → 不抛异常，只跳过
+state.fetchOk = true;
+await pl.setLock('alice.png', 'B', { context: '不存在的模板' });
+const changed2 = await pl.applyLock(pl.getLock('alice.png'));
+ok('模板预设不存在时安全跳过', typeof changed2 === 'boolean');
+
+await pl.setLock('alice.png', 'B', {});
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
