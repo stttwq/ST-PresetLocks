@@ -130,6 +130,17 @@ const modified2 = oaiStub.captureSnapshot();
 await pl.setLock('bob.png', { preset: 'B', enable: { prompts: true }, prompts: modified2 });
 ok('两张卡可存不同提示词快照', JSON.stringify(cardExt(alice()).presetLocks.prompts) !== JSON.stringify(cardExt(bob()).presetLocks.prompts));
 
+// 绑定预设时自动拍快照 + 开启提示词锁定
+use(1, 'chat-new');
+await pl.clearLock('bob.png');
+dom.els['preset_locks_select'].dataset.avatar = 'bob.png';
+dom.els['preset_locks_select'].value = 'B';
+dom.els['preset_locks_select'].dataset.bound = '';
+await pl.onEditorChange();
+const autoLock = cardExt(bob()).presetLocks || {};
+ok('绑定预设时自动拍提示词快照', !!autoLock.prompts && autoLock.enable?.prompts === true, JSON.stringify({ p: !!autoLock.prompts, e: autoLock.enable }));
+ok('绑定预设时不动世界书开关', autoLock.enable?.worlds !== true);
+
 oaiStub.restoreSnapshot(snapshot2);
 ok('桩件可还原', oaiStub.enabledOf('main') === true);
 
@@ -253,6 +264,18 @@ pl.settings().module.rerenderOnSwitch = false;
 ok('关闭开关时不重绘', (await pl.rerenderIfNeeded('RX')) === false);
 pl.settings().module.rerenderOnSwitch = true;
 ok('聊天为空时不重绘', (await pl.rerenderIfNeeded('RX')) === false);
+
+// ===== 默认值 =====
+pl.settings().module.appliedDefaults = 0;
+ok('默认静默（不弹提示）', pl.DEFAULTS.notify === false);
+ok('默认自动切换', pl.DEFAULTS.autoApply === 'always');
+ok('默认切换后重绘', pl.DEFAULTS.rerenderOnSwitch === true);
+ok('默认删卡时问世界书', pl.DEFAULTS.deleteWorldWithCard === true);
+
+pl.settings().module.notify = true;
+const migrated = pl.migrateDefaults();
+ok('升级时把 notify 迁移为静默', migrated === true && pl.settings().module.notify === false, JSON.stringify(pl.settings().module));
+ok('迁移只跑一次', pl.migrateDefaults() === false);
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;

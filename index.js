@@ -15,20 +15,24 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.0.5'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.0.6'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
 const AUTO = { NEVER: 'never', ASK: 'ask', ALWAYS: 'always' };
 
 const DEFAULTS = {
+    // 自动切换是这套东西的意义，默认静默执行（不弹提示，面板摘要里能看到）
     autoApply: AUTO.ALWAYS,
-    notify: true,
+    notify: false,
+    // 删卡时问一句再连世界书一起删
     deleteWorldWithCard: true,
-    // 实测：进入卡时切换与首屏渲染谁先谁后不稳定，不重绘会时不时看到旧渲染，
-    // 所以默认开启（只在目标预设带显示型正则且聊天非空时才多一次重载）。
+    // 实测：聊天已在屏幕上时只有重绘才能得到正确的旧消息显示，所以默认开
     rerenderOnSwitch: true,
 };
+
+/** 推荐默认值的版本号，用于升级时只迁移一次。 */
+const MIGRATION = 3;
 
 let popupInstance = null;
 let applying = false;
@@ -65,6 +69,20 @@ function settings() {
 
 function saveSettings() {
     saveSettingsDebounced();
+}
+
+/** 升级时把推荐默认值迁移一次（只改一次，不覆盖用户后来手动改的）。 */
+function migrateDefaults() {
+    const store = settings();
+    const applied = Number(store.module.appliedDefaults) || 0;
+    if (applied >= MIGRATION) return false;
+
+    // 2.0.6 起的推荐：自动切换静默执行，不弹提示
+    store.module.notify = false;
+    store.module.rerenderOnSwitch = true;
+    store.module.appliedDefaults = MIGRATION;
+    saveSettings();
+    return true;
 }
 
 function getLocalLock(key) {
@@ -1376,7 +1394,20 @@ async function onEditorChange() {
         return;
     }
 
-    const r = await setLock(avatar, { preset });
+    // 绑定预设时顺手把当前提示词开关/顺序拍成快照：这是「同一预设、不同卡不同开关」的前提，
+    // 不拍就只是个空绑定。已存在锁定项时不覆盖用户已有配置。
+    const existing = getLock(avatar);
+    const patch = { preset };
+    if (!existing?.enable) {
+        const oai = await getOpenAiModule();
+        const snap = oai ? capturePromptOrder(oai) : null;
+        if (snap) {
+            patch.prompts = snap;
+            patch.enable = { prompts: true, worlds: false };
+        }
+    }
+
+    const r = await setLock(avatar, patch);
     const shownName = findChar(avatar)?.name || panelCard()?.name || avatar;
     if (r.ok) toast(`角色卡「${shownName}」已绑定预设「${preset}」`);
     else toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
@@ -1534,6 +1565,7 @@ function init() {
     console.log(`${LOG} v${VERSION} 已加载`);
     installToastFilter();
     settings();
+    migrateDefaults();
     migrateByName();
     injectMenuItem();
     injectEditorRow();
