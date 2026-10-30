@@ -340,6 +340,13 @@ alice().data.extensions = { worldBooks: ['W2'], world: null };
 await pl.syncCharLore('alice.png', ['W2']);
 ok('只有 worldBooks 时自动补 world 字段', alice().data.extensions.world === 'W2', JSON.stringify(alice().data.extensions));
 
+// 多本时 charLore 倒存（酒馆注入时会再倒一次，从而回到界面序号顺序）
+state.worlds = ['W1', 'W2', 'W3'];
+extension_settings.world_info.charLore = [];
+await pl.writeCardWorlds('alice.png', ['W1', 'W2', 'W3']);
+await pl.syncCharLore('alice.png', ['W1', 'W2', 'W3']);
+ok('多本时 charLore 倒序存储', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W3","W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');

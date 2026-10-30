@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '1.8.1'; // 与 manifest.json 同步（测试会校）
+const VERSION = '1.8.2'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -306,7 +306,8 @@ async function syncCharLore(avatar, list) {
     const base = avatar ? avatar.replace(/\.[^/.]+$/, '') : '';
     if (!base) return false;
     const clean = (Array.isArray(list) ? list : []).filter((w) => typeof w === 'string' && w);
-    const extra = clean.slice(1);
+    // 酒馆组装提示词时会把 charLore 里的额外书再倒一次，所以这里先倒存，才能让注入顺序 = 界面序号（2、3、4…）
+    const extra = clean.slice(1).reverse();
 
     // 第一本靠 data.extensions.world 生效；如果是手写/旧数据只有 worldBooks，顺手补上（仅内存，不多发请求）
     const ch = findChar(avatar);
