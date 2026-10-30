@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.2.2'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.2.4'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -295,6 +295,8 @@ async function writeCardWorlds(avatar, list) {
 }
 
 let wiModulePromise = null;
+let oaiRef = null;
+let liveCompareQueued = false;
 
 /** 动态 import 只做一次：每轮扫描都重新 import 会白跑一趟模块解析。 */
 async function getWorldInfoModule() {
@@ -597,7 +599,12 @@ let openAiModulePromise = null;
 /** openai.js 只动态 import 一次。取不到（旧版/异常）就返回 null，不影响主流程。 */
 async function getOpenAiModule() {
     if (!openAiModulePromise) {
-        openAiModulePromise = import('../../../openai.js').catch(() => null);
+        openAiModulePromise = import('../../../openai.js')
+            .then((mod) => {
+                oaiRef = mod;
+                return mod;
+            })
+            .catch(() => null);
     }
     return openAiModulePromise;
 }
@@ -883,15 +890,43 @@ function verifyPreset(name, oai) {
 
 // ===== 提示词启用状态与顺序的快照 =====
 
-/** 拿当前活状态的 prompt_order 快照（深拷贝，直接存卡里）。 */
-function capturePromptOrder(oai) {
+/**
+ * 取 prompt_order 快照。
+ * 优先取「预设定义」里的那份：因为本扩展会把卡上快照回写到活状态，
+ * 取活状态会永远逮到自己，导致怎么点「更新快照」都是旧数字。
+ */
+function capturePromptOrder(oai, presetName) {
     try {
+        const names = oai.openai_setting_names;
+        const presets = oai.openai_settings;
+        if (presetName && names && presets) {
+            const idx = names[presetName];
+            const def = idx !== undefined && idx !== null && idx >= 0 ? presets[idx] : null;
+            if (def && Array.isArray(def.prompt_order) && def.prompt_order.length) {
+                return JSON.parse(JSON.stringify(def.prompt_order));
+            }
+        }
         const live = typeof oai.getChatCompletionPreset === 'function' ? oai.getChatCompletionPreset() : null;
         const po = live && Array.isArray(live.prompt_order) ? live.prompt_order : null;
         if (!po || !po.length) return null;
         return JSON.parse(JSON.stringify(po));
     } catch (error) {
         console.warn(`${LOG} 读取提示词顺序失败:`, error);
+        return null;
+    }
+}
+
+/** 预设定义里的 prompt_order 摘要；拿不到返回 null。 */
+function presetPromptSummary(oai, presetName) {
+    try {
+        const names = oai?.openai_setting_names;
+        const presets = oai?.openai_settings;
+        if (!names || !presets || !presetName) return null;
+        const idx = names[presetName];
+        const def = idx !== undefined && idx !== null && idx >= 0 ? presets[idx] : null;
+        if (!def || !Array.isArray(def.prompt_order) || !def.prompt_order.length) return null;
+        return promptOrderSummary(def.prompt_order);
+    } catch {
         return null;
     }
 }
@@ -1510,7 +1545,26 @@ function refreshEditorRow(force = false) {
     if (promptsInfo) {
         const snap = lock?.prompts;
         const [total, on] = promptOrderSummary(snap);
-        promptsInfo.textContent = snap ? `${on}/${total}` : '';
+        let text = snap ? `快照 ${on}/${total}` : '';
+        if (snap && lock.promptsAt) text += ` · ${fmtClock(lock.promptsAt)}`;
+        // 快照与「预设定义」比对（活状态被本扩展回写过，不能拿来比）
+        const defSum = lock?.preset && oaiRef ? presetPromptSummary(oaiRef, lock.preset) : null;
+        if (snap && defSum && (defSum[0] !== total || defSum[1] !== on)) {
+            text += ` ≠ 预设 ${defSum[1]}/${defSum[0]}`;
+        }
+        promptsInfo.textContent = text;
+        promptsInfo.title = snap
+            ? `快照：${on} 条启用 / 共 ${total} 个提示词槽位（含 main、worldInfo、charDescription 等系统槽位）\n存储时间：${fmtTime(lock.promptsAt) || '未记录'}\n带 ≠ 表示当前设置与快照不同，点「更新快照」覆盖`
+            : '还没记录提示词快照';
+
+        // 模块还没加载时补一次异步比较，让「≠ 当前」能及时出现
+        if (snap && !oaiRef && !liveCompareQueued) {
+            liveCompareQueued = true;
+            getOpenAiModule().then(() => {
+                liveCompareQueued = false;
+                setTimeout(() => refreshEditorRow(), 200);
+            });
+        }
     }
     const promptsActions = document.getElementById('pl_prompts_capture');
     if (promptsActions) promptsActions.style.display = key && lock && promptsOn ? '' : 'none';
@@ -1552,8 +1606,7 @@ function refreshEditorRow(force = false) {
             if (lock.enable?.prompts && lock.prompts) {
                 const [total, on] = promptOrderSummary(lock.prompts);
                 parts.push(`词 ${on}/${total}`);
-            }
-            if (lock.enable?.worlds) {
+            }            if (lock.enable?.worlds) {
                 const n = getWorlds(key).length;
                 parts.push(`书 ${n} 本`);
             }
@@ -1592,7 +1645,7 @@ async function onEnableChange(field, checked) {
 
     if (field === 'prompts' && checked && !lock.prompts) {
         const oai = await getOpenAiModule();
-        const snap = oai ? capturePromptOrder(oai) : null;
+        const snap = oai ? capturePromptOrder(oai, lock.preset) : null;
         if (!snap) {
             toast('读不到当前提示词顺序', 'warning');
             refreshEditorRow(true);
@@ -1637,14 +1690,22 @@ async function onCapturePrompts() {
     if (!lock || !lock.preset) return;
 
     const oai = await getOpenAiModule();
-    const snap = oai ? capturePromptOrder(oai) : null;
+    const snap = oai ? capturePromptOrder(oai, lock.preset) : null;
     if (!snap) {
-        toast('读不到当前提示词顺序', 'warning');
+        toast('读不到当前提示词顺序', 'warning', true);
+        flash(document.getElementById('pl_prompts_info'), '读取失败');
         return;
     }
-    const r = await setLock(avatar, { prompts: snap, enable: { ...(lock.enable || {}), prompts: true } });
-    if (!r.ok) toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
-    else toast('提示词快照已更新');
+    const r = await setLock(avatar, { prompts: snap, promptsAt: Date.now(), enable: { ...(lock.enable || {}), prompts: true } });
+    const [total, on] = promptOrderSummary(snap);
+    const btn = document.getElementById('pl_prompts_capture');
+    if (!r.ok) {
+        toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning', true);
+        flash(btn || document.getElementById('pl_prompts_info'), '写卡失败', 2200);
+    } else {
+        toast(`快照已更新：启用 ${on}/${total}`, 'success', true);
+        flash(btn || document.getElementById('pl_prompts_info'), `已更新 ${on}/${total} ✓`, 2000);
+    }
     refreshEditorRow(true);
 }
 
@@ -1693,7 +1754,7 @@ async function onEditorChange() {
     const patch = { preset };
     if (!existing?.enable) {
         const oai = await getOpenAiModule();
-        const snap = oai ? capturePromptOrder(oai) : null;
+        const snap = oai ? capturePromptOrder(oai, preset) : null;
         if (snap) {
             patch.prompts = snap;
             patch.enable = { prompts: true, worlds: false };
@@ -1714,13 +1775,34 @@ async function onEditorChange() {
     }
 }
 
-function toast(msg, type = 'success') {
-    if (!settings().module.notify) return;
+function toast(msg, type = 'success', force = false) {
+    if (!force && !settings().module.notify) return;
     if (typeof toastr === 'undefined') return;
     toastr[type](msg, '预设锁定');
 }
 
+/** 面板内的短暂反馈（不依赖「显示提示」开关，也不会被忽略）。 */
+function flash(el, text, ms = 1600) {
+    if (!el) return;
+    const prev = el.textContent;
+    const cls = el.className;
+    el.textContent = text;
+    el.style.opacity = '1';
+    setTimeout(() => {
+        el.textContent = prev;
+        el.className = cls;
+        el.style.opacity = '';
+    }, ms);
+}
+
 // ===== 面板 =====
+
+function fmtClock(at) {
+    if (!at) return '';
+    const d = new Date(at);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 function fmtTime(at) {
     if (!at) return '';

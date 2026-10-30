@@ -349,6 +349,14 @@ pl.clearLocalKey('alice.png');
 ok('Key 可清除', pl.getLocalKey('alice.png') === null);
 ok('无记录时 applyKeyForCard 返回 false', (await pl.applyKeyForCard('alice.png')) === false);
 
+// 快照优先级：预设定义 > 活状态（否则永远逮到自己）
+oaiStub.openai_setting_names.DEF = oaiStub.openai_settings.length;
+oaiStub.openai_settings.push({ name: 'DEF', temperature: 1, prompt_order: [{ character_id: 100001, order: [{ identifier: 'a', enabled: true }, { identifier: 'b', enabled: false }, { identifier: 'c', enabled: true }] }] });
+const fromDef = pl.capturePromptOrder(oaiStub, 'DEF');
+ok('拍快照优先取预设定义', fromDef && fromDef[0].order.length === 3, JSON.stringify(fromDef && fromDef[0].order.length));
+ok('预设定义摘要可算', JSON.stringify(pl.presetPromptSummary(oaiStub, 'DEF')) === '[3,2]', JSON.stringify(pl.presetPromptSummary(oaiStub, 'DEF')));
+ok('无定义时退回活状态', (pl.capturePromptOrder(oaiStub, '不存在') || []).length > 0);
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
