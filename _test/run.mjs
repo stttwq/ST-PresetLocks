@@ -210,20 +210,51 @@ oaiStub.setEnabled('jazz', false);
 await pl.onCapturePrompts();
 ok('「用当前状态更新」刷新快照', cardExt(alice()).presetLocks.prompts[0].order.some((e) => e.identifier === 'jazz' && e.enabled === false));
 
-// ===== 5. 删卡连带删世界书 =====
-await pl.writeCardWorlds('alice.png', ['W1', 'W2']);
+// ===== 5. 删卡只删「属于这张卡」的世界书 =====
+// 夹具：把一本书命名成卡的名字，另一本卡绑着但同名无关
+state.ctx.characters[0].name = '爱丽丝';
+state.worlds = ['爱丽丝', 'W2', 'W3', 'alice'];
+await pl.writeCardWorlds('alice.png', ['爱丽丝', 'W2']);
 await pl.writeCardWorlds('bob.png', ['W2']);
 state.popupAnswers = [1];
 state.popupCalls.length = 0;
 let toDelete = await pl.decideWorldDelete('alice.png');
-ok('被共用的一本不列入删除', JSON.stringify(toDelete) === '["W1"]', JSON.stringify(toDelete));
+ok('只列出与卡同名的那本', JSON.stringify(toDelete) === '["爱丽丝"]', JSON.stringify(toDelete));
+ok('同名的卡专属书不被共用影响', !toDelete.includes('W2'));
+
 pl.pendingWorldDelete.set('alice.png', toDelete);
 await pl.onCharacterDeleted({ character: alice() });
-ok('删卡后真的删掉文件', !state.worlds.includes('W1') && state.worlds.includes('W2'), state.worlds.join(','));
+ok('删卡后真的删掉文件', !state.worlds.includes('爱丽丝') && state.worlds.includes('W2'), state.worlds.join(','));
+
+// 同名书被别的卡占着 → 保留
+state.worlds = ['爱丽丝', 'W3'];
+await pl.writeCardWorlds('alice.png', ['爱丽丝']);
+await pl.writeCardWorlds('bob.png', ['爱丽丝']);
+state.popupCalls.length = 0;
+toDelete = await pl.decideWorldDelete('alice.png');
+ok('同名书被其他卡共用时不列', toDelete.length === 0 && state.popupCalls.length === 0);
 await pl.writeCardWorlds('bob.png', []);
 
-state.popupAnswers = [0];
+// 卡自带 character_book → 书也算自己的
+state.worlds = ['卡内书名', 'W3'];
+alice().data.character_book = { name: '卡内书名', entries: [] };
+await pl.writeCardWorlds('alice.png', ['卡内书名']);
+state.popupAnswers = [1];
+toDelete = await pl.decideWorldDelete('alice.png');
+ok('character_book 的书也算专属', JSON.stringify(toDelete) === '["卡内书名"]', JSON.stringify(toDelete));
+delete alice().data.character_book;
+
+// 绑定但既不同名也不是自带 → 不问
+state.worlds = ['W3'];
 await pl.writeCardWorlds('alice.png', ['W3']);
+state.popupCalls.length = 0;
+toDelete = await pl.decideWorldDelete('alice.png');
+ok('绑定但无关的书不问也不删', toDelete.length === 0 && state.popupCalls.length === 0);
+
+// 用户选「只删角色卡」
+state.worlds = ['爱丽丝'];
+await pl.writeCardWorlds('alice.png', ['爱丽丝']);
+state.popupAnswers = [0];
 toDelete = await pl.decideWorldDelete('alice.png');
 ok('选「只删角色卡」时不删书', toDelete.length === 0);
 
@@ -232,6 +263,7 @@ state.popupCalls.length = 0;
 toDelete = await pl.decideWorldDelete('alice.png');
 ok('关掉开关后不问', toDelete.length === 0 && state.popupCalls.length === 0);
 pl.settings().module.deleteWorldWithCard = true;
+await pl.writeCardWorlds('alice.png', []);
 
 // ===== 6. SPreset 入口 =====
 oaiStub.openai_setting_names.SP = oaiStub.openai_settings.length;

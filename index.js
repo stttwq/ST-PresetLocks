@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.0.6'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.1.0'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -393,24 +393,58 @@ async function refreshStWorldList() {
     }
 }
 
-/** 删卡前先问：这张卡绑定的多本世界书要不要一并删。此时卡还在，弹窗不会被酒馆重渲染冲掉。 */
+/**
+ * 只属于这张卡的世界书：与卡同名/同文件名，或来自卡自带的 character_book。
+ * 卡绑定但不属于它的书（别人给的共用书）不算，删卡时不动。
+ */
+function cardOwnedWorlds(avatar) {
+    const ch = findChar(avatar);
+    if (!ch) return new Set();
+
+    const base = avatar.replace(/\.[^/.]+$/, '');
+    const names = new Set();
+    const add = (v) => {
+        if (typeof v === 'string' && v.trim()) names.add(v.trim());
+    };
+
+    add(ch.name);
+    add(base);
+
+    const book = ch.data?.character_book;
+    if (book) {
+        add(book.name);
+        if (ch.name) add(`${ch.name}'s Lorebook`); // 酒馆内嵌书的默认命名
+    }
+
+    return names;
+}
+
+/** 删卡前先问：这张卡**自己的**世界书要不要一并删。 */
 async function decideWorldDelete(avatar) {
     if (!settings().module.deleteWorldWithCard) return [];
 
     const ch = findChar(avatar);
-    const bound = getWorlds(avatar);
-    if (!ch || !bound.length) return [];
+    if (!ch) return [];
 
-    if (!worldListCache || bound.some((w) => !worldListCache.some((x) => x.file_id === w))) {
+    const owned = cardOwnedWorlds(avatar);
+    const bound = new Set([...getWorlds(avatar), ch.data?.extensions?.[WORLD_KEY]]);
+    bound.delete('');
+    bound.delete(null);
+    bound.delete(undefined);
+
+    // 只考虑「绑定的」∩「属于这张卡的」
+    const candidates = [...bound].filter((w) => owned.has(w));
+    if (!candidates.length) return [];
+
+    if (!worldListCache || candidates.some((w) => !worldListCache.some((x) => x.file_id === w))) {
         await fetchWorldList(true);
     }
 
     const deletable = [];
     const shared = [];
-    const missing = [];
-    for (const w of bound) {
+    for (const w of candidates) {
         if (worldRefs(w, avatar).length) shared.push(w);
-        else if (!worldListCache?.some((x) => x.file_id === w)) missing.push(w);
+        else if (!worldListCache?.some((x) => x.file_id === w)) continue; // 文件已不在，不用删
         else deletable.push(w);
     }
 
@@ -420,9 +454,10 @@ async function decideWorldDelete(avatar) {
     const listHtml = deletable.map((w, i) => `<div>${i + 1}. <b>${w}</b></div>`).join('');
     const ok = await callGenericPopup(
         `<div class="flex gap1 flexFlowColumn">
-            <div>角色卡「${ch.name || avatar}」绑定了 ${bound.length} 本世界书，删除卡后这几本可以一并删掉：</div>
+            <div>角色卡「${ch.name || avatar}」自带的 ${deletable.length} 本世界书可以一并删掉：</div>
             ${listHtml}
-            <div class="opacity50p font70p">选「一并删除」会从服务器移除这些文件，不可撤销。${shared.length ? `另有 ${shared.length} 本被其他卡共用/早已不在，不会动。` : ''}</div>
+            <div class="opacity50p font70p">只列与卡同名或卡自带（character_book）的书；卡绑定的其它世界书不会动。
+            选「一并删除」会从服务器移除这些文件，不可撤销。${shared.length ? `另有 ${shared.length} 本被其他卡共用，不会动。` : ''}</div>
          </div>`,
         POPUP_TYPE.CONFIRM,
         '顺便删除世界书？',
