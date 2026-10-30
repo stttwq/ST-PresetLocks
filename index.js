@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.0.4'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.0.5'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -25,11 +25,15 @@ const DEFAULTS = {
     autoApply: AUTO.ALWAYS,
     notify: true,
     deleteWorldWithCard: true,
+    // 实测：进入卡时切换与首屏渲染谁先谁后不稳定，不重绘会时不时看到旧渲染，
+    // 所以默认开启（只在目标预设带显示型正则且聊天非空时才多一次重载）。
+    rerenderOnSwitch: true,
 };
 
 let popupInstance = null;
 let applying = false;
 let suppressRegexNotice = false;
+let rerendering = false;
 
 /**
  * 酒馆的正则扩展在预设应用时会弹「重新加载聊天以使正则生效」。
@@ -485,7 +489,52 @@ async function applyPreset(name) {
     } finally {
         suppressRegexNotice = false;
     }
+    await rerenderIfNeeded(name);
     return true;
+}
+
+/** 这个预设是不是带能看到效果的显示型正则（markdownOnly）。 */
+function presetHasDisplayRegex(oai, name) {
+    try {
+        const names = oai?.openai_setting_names;
+        const presets = oai?.openai_settings;
+        if (!names || !presets || !name) return false;
+        const idx = typeof names === 'object' && !Array.isArray(names) ? names[name] : -1;
+        const def = idx === undefined || idx === null || idx < 0 ? null : presets[idx];
+        const scripts = def?.extensions?.regex_scripts;
+        if (!Array.isArray(scripts)) return false;
+        return scripts.some((s) => s && s.disabled !== true && s.markdownOnly === true);
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * 已经渲染在屏幕上的旧消息不会因为换预设而重新走一遍显示型正则，
+ * 它们是在加载时渲染的。酒馆的做法是弹「重载聊天」提示让人点。
+ * 我们刚切入聊天，内存状与文件一致，所以直接重绘一次更省事。
+ */
+async function rerenderIfNeeded(presetName) {
+    if (!settings().module.rerenderOnSwitch) return false;
+    if (rerendering) return false;
+    const oai = await getOpenAiModule();
+    if (!oai || !presetHasDisplayRegex(oai, presetName)) return false;
+    const ctx = getContext();
+    if (!Array.isArray(ctx?.chat) || ctx.chat.length === 0) return false;
+
+    rerendering = true;
+    try {
+        const main = await import('../../../../script.js');
+        if (typeof main.reloadCurrentChat === 'function') await main.reloadCurrentChat();
+        return true;
+    } catch (error) {
+        console.warn(`${LOG} 重绘旧消息失败:`, error);
+        return false;
+    } finally {
+        setTimeout(() => {
+            rerendering = false;
+        }, 2000);
+    }
 }
 
 // ===== 切换后的收尾（目标是：不需要刷新页面） =====
@@ -701,6 +750,7 @@ function onContextChanged() {
 }
 
 async function runContextChanged() {
+    if (rerendering) return; // 自己触发的重绘不再跑一轮
     // 打开卡/聊天时同步世界书（只有勾了「世界书」才动）
     const activeKey = cardKey();
     const activeLock = activeKey ? getLock(activeKey) : null;
@@ -835,7 +885,6 @@ function injectEditorRow() {
                 </label>
                 <span class="pl-ghost" id="pl_prompts_capture" style="display:none" title="把当前提示词开关/顺序重新存进这张卡">更新快照</span>
             </div>
-
             <div class="pl-line">
                 <label class="pl-line" style="flex:1 1 auto" title="这张卡要带哪些世界书">
                     <input type="checkbox" id="pl_enable_worlds">
@@ -849,6 +898,13 @@ function injectEditorRow() {
                 <input id="world_lock_search" class="text_pole" placeholder="搜索世界书以添加…">
                 <div class="pl-results" id="world_lock_results"></div>
             </div>
+
+            <div class="pl-line">
+                <label class="pl-line" style="flex:1 1 auto" title="切入卡后，若新预设带显示型正则，自动重绘旧消息（重读聊天文件，不丢消息）">
+                    <input type="checkbox" id="pl_rerender">
+                    <span class="pl-name">切换后重绘旧消息</span>
+                </label>
+            </div>
         </div>`;
     anchor.parentElement.insertBefore(row, anchor);
 
@@ -861,6 +917,10 @@ function injectEditorRow() {
     row.querySelector('#pl_enable_prompts').addEventListener('change', (e) => onEnableChange('prompts', e.target.checked));
     row.querySelector('#pl_enable_worlds').addEventListener('change', (e) => onEnableChange('worlds', e.target.checked));
     row.querySelector('#pl_prompts_capture').addEventListener('click', () => onCapturePrompts());
+    row.querySelector('#pl_rerender').addEventListener('change', (e) => {
+        settings().module.rerenderOnSwitch = e.target.checked;
+        saveSettings();
+    });
     row.querySelector('#world_lock_search').addEventListener('input', () => refreshWorldResults());
     row.querySelector('#world_lock_list').addEventListener('click', (e) => onWorldAction(e));
     row.querySelector('#world_lock_results').addEventListener('click', (e) => onWorldAdd(e));
@@ -1206,6 +1266,9 @@ function refreshEditorRow(force = false) {
 
     const worldsBox = document.getElementById('pl_worlds_box');
     if (worldsBox) worldsBox.style.display = key && lock && worldsOn ? '' : 'none';
+
+    const rerender = document.getElementById('pl_rerender');
+    if (rerender) rerender.checked = !!settings().module.rerenderOnSwitch;
 
     // 摘要行（收起时也能看出这张卡锁了什么）
     const summary = document.getElementById('preset_locks_summary');

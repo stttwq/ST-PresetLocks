@@ -240,6 +240,20 @@ document.querySelectorAll = origQSA;
 const manifestVersion = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')).version;
 ok('VERSION 与 manifest 一致', pl.VERSION === manifestVersion, `code=${pl.VERSION} manifest=${manifestVersion}`);
 
+// 显示型正则判定 + 自动重绘开关
+oaiStub.openai_setting_names.RX = oaiStub.openai_settings.length;
+oaiStub.openai_settings.push({ name: 'RX', extensions: { regex_scripts: [{ scriptName: 'a', markdownOnly: true, disabled: false }, { scriptName: 'b', markdownOnly: false }] } });
+oaiStub.openai_setting_names.NORX = oaiStub.openai_settings.length;
+oaiStub.openai_settings.push({ name: 'NORX', extensions: { regex_scripts: [{ scriptName: 'c', markdownOnly: false, disabled: false }] } });
+ok('识别带显示型正则的预设', pl.presetHasDisplayRegex(oaiStub, 'RX') === true);
+ok('无显示型正则的预设返回 false', pl.presetHasDisplayRegex(oaiStub, 'NORX') === false);
+ok('无正则扩展的预设返回 false', pl.presetHasDisplayRegex(oaiStub, 'P1') === false);
+
+pl.settings().module.rerenderOnSwitch = false;
+ok('关闭开关时不重绘', (await pl.rerenderIfNeeded('RX')) === false);
+pl.settings().module.rerenderOnSwitch = true;
+ok('聊天为空时不重绘', (await pl.rerenderIfNeeded('RX')) === false);
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
