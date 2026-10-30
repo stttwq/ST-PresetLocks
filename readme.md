@@ -68,6 +68,27 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 旧版本升级时会自动迁移一次（只改一次，不会覆盖你后来手改的值）。
 
+## API 连接锁定（v2.2 起）
+
+酒馆里切预设会连带改掉 **API 连接**（来源 / 地址 / 模型 / 代理 / 密钥入口），这就是「配置莫名其妙被吞」的来源。
+
+现在可以把连接一起记到卡上：
+
+- 面板里勾 **API 连接** → 立刻拍一份连接快照（只含酒馆标记为连接类的字段）
+- 之后进这张卡会自动把连接拉回快照
+- **任何预设切换（包括你手动在下拉里切）都会把连接拉回快照** —— 只有两种东西能改它：这个扩展（「更新连接」按钮）和你手动改 API 设置
+
+实测（你的实例）：
+
+| 步骤 | chat_completion_source | custom_url | custom_model |
+| --- | --- | --- | --- |
+| 锁定后 | deepseek | discovery-api… | Atria-Dawn |
+| 模拟被吞（改成 openai / 清空 URL 与模型） | openai | (空) | (空) |
+| 手动切到另一个预设 | **deepseek** | **discovery-api…** | **Atria-Dawn** |
+| 手动在 UI 改成 claude（不切预设） | claude（允许，不被拉回） | — | — |
+
+快照字段来自酒馆自己的 settingsToUpdate[...][3] === true（当前 56 项），不靠猜。
+
 ## 锁定模型（v2.0 起）
 
 一张卡 = 一个主预设 + 几个可选项。面板默认收起，只留一行摘要；未绑定的卡会自动展开。

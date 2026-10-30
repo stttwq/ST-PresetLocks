@@ -18,6 +18,9 @@ export const eventSource = {
     on(name, fn) {
         (state.handlers[name] ||= []).push(fn);
     },
+    emit(name, payload) {
+        for (const fn of state.handlers[name] || []) fn(payload);
+    },
 };
 
 export const event_types = {
@@ -25,6 +28,7 @@ export const event_types = {
     CHAT_CHANGED: 'chat_changed',
     CHAT_LOADED: 'chat_loaded',
     CHARACTER_DELETED: 'character_deleted',
+    OAI_PRESET_CHANGED_AFTER: 'oai_preset_changed_after',
 };
 
 export const saveSettingsDebounced = () => {};

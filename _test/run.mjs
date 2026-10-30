@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { state, extension_settings, dom, makeElem, extraState } from './stubs.mjs';
+import { state, extension_settings, dom, makeElem, extraState, eventSource, event_types } from './stubs.mjs';
 import * as oaiStub from './openai-stub.mjs';
 import * as pl from './pl.mjs';
 
@@ -308,6 +308,37 @@ pl.settings().module.notify = true;
 const migrated = pl.migrateDefaults();
 ok('升级时把 notify 迁移为静默', migrated === true && pl.settings().module.notify === false, JSON.stringify(pl.settings().module));
 ok('迁移只跑一次', pl.migrateDefaults() === false);
+
+// ===== API 连接快照 =====
+const conn = pl.captureConnection(oaiStub);
+ok('拍到连接快照', !!conn && conn.chat_completion_source === 'deepseek' && conn.custom_url === 'https://example.test/v1');
+ok('连接快照不含非连接字段', conn && !('temperature' in conn) && !('top_p' in conn), JSON.stringify(Object.keys(conn || {})));
+
+// 模拟“被预设吞掉”
+oaiStub.live.chat_completion_source = 'openai';
+oaiStub.live.custom_url = '';
+oaiStub.live.custom_model = '';
+const changedKeys = pl.applyConnection(oaiStub, conn);
+ok('写回连接字段', changedKeys.indexOf('chat_completion_source') >= 0 && oaiStub.live.chat_completion_source === 'deepseek' && oaiStub.live.custom_url === 'https://example.test/v1', changedKeys.join(','));
+ok('一致时不再重复写', pl.applyConnection(oaiStub, conn).length === 0);
+ok('温度不在保护范围', oaiStub.live.temperature === 1 && pl.applyConnection(oaiStub, { temperature: 9 }).length === 0 && oaiStub.live.temperature === 1);
+
+// 卡上锁了连接 → 外部切预设后自动拉回
+use(0, 'chat-a');
+await pl.setLock('alice.png', { preset: 'B', enable: { connection: true }, connection: conn });
+oaiStub.live.chat_completion_source = 'claude';
+pl.installConnectionGuard();
+eventSource.emit(event_types.OAI_PRESET_CHANGED_AFTER, {});
+await new Promise((r) => setTimeout(r, 50));
+ok('外部切预设后连接被拉回', oaiStub.live.chat_completion_source === 'deepseek', oaiStub.live.chat_completion_source);
+
+// 没锁连接时不动
+oaiStub.live.chat_completion_source = 'claude';
+await pl.setLock('bob.png', { preset: 'C', enable: { connection: false } });
+use(1, 'chat-x');
+await pl.restoreConnectionLock();
+ok('未锁连接时不干预', oaiStub.live.chat_completion_source === 'claude');
+oaiStub.live.chat_completion_source = 'deepseek';
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;

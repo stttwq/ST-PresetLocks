@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.1.0'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.2.1'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -686,6 +686,96 @@ function syncSPresetUI(oai, name) {
     return { has, touched };
 }
 
+// ===== API 连接快照（防止被预设/其它扩展吞掉） =====
+
+let restoringConnection = false;
+
+/** 酒馆在 settingsToUpdate 里把连接类字段标了 isConnection=true，直接用这个作为权威名单。 */
+function isConnectionKey(oai, key) {
+    const entry = oai?.settingsToUpdate?.[key];
+    if (entry) return entry[3] === true;
+    return (
+        key === 'chat_completion_source' ||
+        key === 'reverse_proxy' ||
+        key === 'proxy_password' ||
+        /(^|_)(model|endpoint|url)$/i.test(key) ||
+        /^custom_(include|exclude|prompt)/i.test(key)
+    );
+}
+
+/** 拍一份连接快照（只包含连接类字段）。 */
+function captureConnection(oai) {
+    try {
+        const live = typeof oai.getChatCompletionPreset === 'function' ? oai.getChatCompletionPreset() : oai.oai_settings;
+        const out = {};
+        for (const key of Object.keys(live || {})) {
+            const v = live[key];
+            if (v !== null && typeof v === 'object') continue;
+            if (isConnectionKey(oai, key)) out[key] = v;
+        }
+        return Object.keys(out).length ? out : null;
+    } catch (error) {
+        console.warn(`${LOG} 读取 API 连接失败:`, error);
+        return null;
+    }
+}
+
+/** 把快照写回活状态与界面，返回真正改动的字段。 */
+function applyConnection(oai, snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') return [];
+    const changed = [];
+    try {
+        for (const [key, value] of Object.entries(snapshot)) {
+            if (!isConnectionKey(oai, key)) continue; // 只动连接类字段
+            if (oai.oai_settings[key] === value) continue;
+            oai.oai_settings[key] = value;
+            changed.push(key);
+            const selector = oai.settingsToUpdate?.[key]?.[0];
+            const el = selector ? document.querySelector(selector) : null;
+            if (!el) continue;
+            if (el.type === 'checkbox') el.checked = !!value;
+            else el.value = value;
+        }
+    } catch (error) {
+        console.warn(`${LOG} 写回 API 连接失败:`, error);
+    }
+    if (changed.length) saveSettingsDebounced();
+    return changed;
+}
+
+/** 当前卡锁了连接时，把连接拉回快照。 */
+async function restoreConnectionLock() {
+    if (restoringConnection) return [];
+    const key = cardKey();
+    if (!key) return [];
+    const lock = getLock(key);
+    if (!lock?.enable?.connection || !lock.connection) return [];
+
+    const oai = await getOpenAiModule();
+    if (!oai) return [];
+
+    restoringConnection = true;
+    try {
+        return applyConnection(oai, lock.connection);
+    } finally {
+        setTimeout(() => {
+            restoringConnection = false;
+        }, 500);
+    }
+}
+
+/**
+ * 除了本扩展与手动改 API 设置，任何“切预设”都不得改掉连接配置。
+ * 所以监听酒馆的预设应用事件，事后把连接拉回快照。
+ */
+function installConnectionGuard() {
+    if (!event_types?.OAI_PRESET_CHANGED_AFTER) return;
+    eventSource.on(event_types.OAI_PRESET_CHANGED_AFTER, () => {
+        if (applying || restoringConnection) return;
+        restoreConnectionLock().catch((error) => console.warn(`${LOG} 恢复连接失败:`, error));
+    });
+}
+
 /** 拿活的设置和预设定义逐项比，返回不一致的字段名。 */
 function verifyPreset(name, oai) {
     try {
@@ -769,9 +859,15 @@ async function applyLock(lock) {
 
     if (lock.preset) changed = (await applyPreset(lock.preset)) || changed;
 
-    if (lock.enable?.prompts && lock.prompts) {
+    if ((lock.enable?.prompts && lock.prompts) || (lock.enable?.connection && lock.connection)) {
         const oai = await getOpenAiModule();
-        if (oai) changed = (await applyPromptOrder(oai, lock.prompts)) || changed;
+        if (oai) {
+            if (lock.enable?.prompts && lock.prompts) changed = (await applyPromptOrder(oai, lock.prompts)) || changed;
+            // 预设应用会改掉连接配置，这里按卡上的快照拉回来
+            if (lock.enable?.connection && lock.connection) {
+                changed = applyConnection(oai, lock.connection).length > 0 || changed;
+            }
+        }
     }
     return changed;
 }
@@ -938,6 +1034,15 @@ function injectEditorRow() {
                 </label>
                 <span class="pl-ghost" id="pl_prompts_capture" style="display:none" title="把当前提示词开关/顺序重新存进这张卡">更新快照</span>
             </div>
+
+            <div class="pl-line">
+                <label class="pl-line" style="flex:1 1 auto" title="把 API 连接（来源/地址/模型/代理）一起记到这张卡，防止被预设或其它扩展吞掉">
+                    <input type="checkbox" id="pl_enable_connection">
+                    <span class="pl-name">API 连接</span>
+                    <span class="pl-stat" id="pl_conn_info"></span>
+                </label>
+                <span class="pl-ghost" id="pl_conn_capture" style="display:none" title="用当前 API 连接覆盖这张卡上的记录">更新连接</span>
+            </div>
             <div class="pl-line">
                 <label class="pl-line" style="flex:1 1 auto" title="这张卡要带哪些世界书">
                     <input type="checkbox" id="pl_enable_worlds">
@@ -970,6 +1075,8 @@ function injectEditorRow() {
     row.querySelector('#pl_enable_prompts').addEventListener('change', (e) => onEnableChange('prompts', e.target.checked));
     row.querySelector('#pl_enable_worlds').addEventListener('change', (e) => onEnableChange('worlds', e.target.checked));
     row.querySelector('#pl_prompts_capture').addEventListener('click', () => onCapturePrompts());
+    row.querySelector('#pl_enable_connection').addEventListener('change', (e) => onEnableChange('connection', e.target.checked));
+    row.querySelector('#pl_conn_capture').addEventListener('click', () => onCaptureConnection());
     row.querySelector('#pl_rerender').addEventListener('change', (e) => {
         settings().module.rerenderOnSwitch = e.target.checked;
         saveSettings();
@@ -1323,6 +1430,14 @@ function refreshEditorRow(force = false) {
     const rerender = document.getElementById('pl_rerender');
     if (rerender) rerender.checked = !!settings().module.rerenderOnSwitch;
 
+    const connOn = !!lock?.enable?.connection;
+    const cbConn = document.getElementById('pl_enable_connection');
+    if (cbConn) cbConn.checked = connOn;
+    const connInfo = document.getElementById('pl_conn_info');
+    if (connInfo) connInfo.textContent = lock?.connection ? String(lock.connection.chat_completion_source || '') : '';
+    const connCapture = document.getElementById('pl_conn_capture');
+    if (connCapture) connCapture.style.display = key && lock && connOn ? '' : 'none';
+
     // 摘要行（收起时也能看出这张卡锁了什么）
     const summary = document.getElementById('preset_locks_summary');
     if (summary) {
@@ -1337,6 +1452,9 @@ function refreshEditorRow(force = false) {
             if (lock.enable?.worlds) {
                 const n = getWorlds(key).length;
                 parts.push(`书 ${n} 本`);
+            }
+            if (lock.enable?.connection && lock.connection) {
+                parts.push(`连接 ${lock.connection.chat_completion_source || '?'}`);
             }
             summary.textContent = parts.join(' · ');
         }
@@ -1379,6 +1497,17 @@ async function onEnableChange(field, checked) {
         patch.prompts = snap;
     }
 
+    if (field === 'connection' && checked && !lock.connection) {
+        const oai = await getOpenAiModule();
+        const snap = oai ? captureConnection(oai) : null;
+        if (!snap) {
+            toast('读不到当前 API 连接', 'warning');
+            refreshEditorRow(true);
+            return;
+        }
+        patch.connection = snap;
+    }
+
     const r = await setLock(avatar, patch);
     if (!r.ok) toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
     refreshEditorRow(true);
@@ -1407,6 +1536,26 @@ async function onCapturePrompts() {
     const r = await setLock(avatar, { prompts: snap, enable: { ...(lock.enable || {}), prompts: true } });
     if (!r.ok) toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
     else toast('提示词快照已更新');
+    refreshEditorRow(true);
+}
+
+/** 用当前 API 连接覆盖卡上的记录。 */
+async function onCaptureConnection() {
+    const sel = document.getElementById('preset_locks_select');
+    const avatar = sel?.dataset.avatar || '';
+    if (!avatar) return;
+    const lock = getLock(avatar);
+    if (!lock || !lock.preset) return;
+
+    const oai = await getOpenAiModule();
+    const snap = oai ? captureConnection(oai) : null;
+    if (!snap) {
+        toast('读不到当前 API 连接', 'warning');
+        return;
+    }
+    const r = await setLock(avatar, { connection: snap, enable: { ...(lock.enable || {}), connection: true } });
+    if (!r.ok) toast(`写不进角色卡，已存到本机兜底：${r.reason}`, 'warning');
+    else toast('API 连接已记录');
     refreshEditorRow(true);
 }
 
@@ -1622,6 +1771,7 @@ function init() {
         eventSource.on(event_types.WORLDINFO_UPDATED, () => { worldListCache = null; refreshWorldRow(true); });
     }
     installDeleteHook();
+    installConnectionGuard();
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次
     onContextChanged();

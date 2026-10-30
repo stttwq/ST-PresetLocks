@@ -18,9 +18,27 @@ export const live = {
     temperature: 1,
     top_p: 1,
     chat_completion_source: 'deepseek',
+    custom_url: 'https://example.test/v1',
+    custom_model: 'model-A',
+    reverse_proxy: '',
+    proxy_password: '',
     openai_model: 'gpt-4-turbo',
+    deepseek_model: 'deepseek-chat',
     prompts: [{ identifier: 'main', content: 'hi', role: 'system' }],
     prompt_order: [{ character_id: 100001, order: baseOrder.map((e) => ({ ...e })) }],
+};
+
+/** 酒馆用 settingsToUpdate 标记连接类字段（第 4 位 isConnection） */
+export const settingsToUpdate = {
+    chat_completion_source: ['#chat_completion_source', 'chat_completion_source', false, true],
+    custom_url: ['#custom_api_url_text', 'custom_url', false, true],
+    custom_model: ['#custom_model_id', 'custom_model', false, true],
+    openai_model: ['#model_openai_select', 'openai_model', false, true],
+    deepseek_model: ['#model_deepseek_select', 'deepseek_model', false, true],
+    reverse_proxy: ['#openai_reverse_proxy', 'reverse_proxy', false, true],
+    proxy_password: ['#openai_proxy_access_key', 'proxy_password', false, true],
+    temperature: ['#temp_openai', 'temperature', false, false],
+    top_p: ['#top_p_openai', 'top_p', false, false],
 };
 
 export const openai_setting_names = { P1: 0, P2: 1 };
