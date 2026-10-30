@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.2.1'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.2.2'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -689,6 +689,7 @@ function syncSPresetUI(oai, name) {
 // ===== API 连接快照（防止被预设/其它扩展吞掉） =====
 
 let restoringConnection = false;
+let lastKeyAvatar = '';
 
 /** 酒馆在 settingsToUpdate 里把连接类字段标了 isConnection=true，直接用这个作为权威名单。 */
 function isConnectionKey(oai, key) {
@@ -774,6 +775,80 @@ function installConnectionGuard() {
         if (applying || restoringConnection) return;
         restoreConnectionLock().catch((error) => console.warn(`${LOG} 恢复连接失败:`, error));
     });
+}
+
+// ===== API Key（存本机，不写卡，避免分享卡时泄密） =====
+
+const KEY_ID_RE = /^api_key_[a-z0-9_]+$/;
+
+function secretKeyName(source) {
+    return `api_key_${String(source || 'custom').toLowerCase()}`;
+}
+
+function localKeys() {
+    const store = settings();
+    store.keys = store.keys || {};
+    return store.keys;
+}
+
+function getLocalKey(avatar) {
+    return avatar ? localKeys()[avatar] || null : null;
+}
+
+function setLocalKey(avatar, source, key) {
+    if (!avatar || !key) return;
+    localKeys()[avatar] = { source, key, at: Date.now() };
+    saveSettings();
+}
+
+function clearLocalKey(avatar) {
+    if (!avatar) return;
+    delete localKeys()[avatar];
+    saveSettings();
+}
+
+/** 把这张卡记的 key 写给酒馆（服务端 secrets），返回是否真的写了。 */
+async function applyKeyForCard(avatar) {
+    const rec = getLocalKey(avatar);
+    if (!rec || !rec.key) return false;
+    try {
+        const mod = await import('../../../secrets.js');
+        if (typeof mod.writeSecret !== 'function') return false;
+        await mod.writeSecret(secretKeyName(rec.source), rec.key);
+        return true;
+    } catch (error) {
+        console.warn(`${LOG} 写入 API Key 失败:`, error);
+        return false;
+    }
+}
+
+/**
+ * 酒馆不会把已保存的 key 回显（输入框是空的，服务端也只给掩码），
+ * 所以只能在你往输入框里粘的那一刻抓一次，存在本机（不写进卡文件）。
+ */
+function installKeyCapture() {
+    if (window.__plKeyCapture) return;
+    window.__plKeyCapture = true;
+
+    document.addEventListener(
+        'input',
+        (event) => {
+            const el = event.target;
+            if (!el || !el.id || !KEY_ID_RE.test(el.id)) return;
+            const value = String(el.value || '').trim();
+            if (!value) return;
+
+            const avatar = panelCard()?.avatar || cardKey();
+            if (!avatar) return;
+            const lock = getLock(avatar);
+            if (!lock?.enable?.connection) return; // 没锁连接就不记
+
+            const source = el.id.replace(/^api_key_/, '') || lock.connection?.chat_completion_source || 'custom';
+            setLocalKey(avatar, source, value);
+            refreshEditorRow(true);
+        },
+        true,
+    );
 }
 
 /** 拿活的设置和预设定义逐项比，返回不一致的字段名。 */
@@ -912,6 +987,12 @@ async function runContextChanged() {
 
     const lock = getLock(key);
     if (!lock || !lock.preset) return;
+
+    // 换到一张新卡就先对齐 Key（与预设是否已生效无关）
+    if (key !== lastKeyAvatar) {
+        lastKeyAvatar = key;
+        if (lock.enable?.connection) await applyKeyForCard(key);
+    }
     if (await lockSatisfied(lock)) return;
 
     const mode = settings().module.autoApply;
@@ -1043,6 +1124,10 @@ function injectEditorRow() {
                 </label>
                 <span class="pl-ghost" id="pl_conn_capture" style="display:none" title="用当前 API 连接覆盖这张卡上的记录">更新连接</span>
             </div>
+            <div class="pl-line" id="pl_key_line" style="display:none">
+                <span class="pl-stat" id="pl_key_info"></span>
+                <span class="pl-ghost" id="pl_key_clear" title="删除本机记录的这条 Key">清除 Key</span>
+            </div>
             <div class="pl-line">
                 <label class="pl-line" style="flex:1 1 auto" title="这张卡要带哪些世界书">
                     <input type="checkbox" id="pl_enable_worlds">
@@ -1077,6 +1162,12 @@ function injectEditorRow() {
     row.querySelector('#pl_prompts_capture').addEventListener('click', () => onCapturePrompts());
     row.querySelector('#pl_enable_connection').addEventListener('change', (e) => onEnableChange('connection', e.target.checked));
     row.querySelector('#pl_conn_capture').addEventListener('click', () => onCaptureConnection());
+    row.querySelector('#pl_key_clear').addEventListener('click', () => {
+        const avatar = document.getElementById('preset_locks_select')?.dataset.avatar || '';
+        clearLocalKey(avatar);
+        toast('已清除本机记录的 API Key');
+        refreshEditorRow(true);
+    });
     row.querySelector('#pl_rerender').addEventListener('change', (e) => {
         settings().module.rerenderOnSwitch = e.target.checked;
         saveSettings();
@@ -1438,6 +1529,19 @@ function refreshEditorRow(force = false) {
     const connCapture = document.getElementById('pl_conn_capture');
     if (connCapture) connCapture.style.display = key && lock && connOn ? '' : 'none';
 
+    const keyLine = document.getElementById('pl_key_line');
+    const keyInfo = document.getElementById('pl_key_info');
+    const rec = key ? getLocalKey(key) : null;
+    if (keyLine && keyInfo) {
+        const showKey = key && lock && connOn;
+        keyLine.style.display = showKey ? '' : 'none';
+        if (showKey) {
+            keyInfo.textContent = rec
+                ? `Key 已存本机（${rec.source}）`
+                : 'Key 未存：在酒馆 API Key 输入框粘一次即自动记录';
+        }
+    }
+
     // 摘要行（收起时也能看出这张卡锁了什么）
     const summary = document.getElementById('preset_locks_summary');
     if (summary) {
@@ -1506,6 +1610,11 @@ async function onEnableChange(field, checked) {
             return;
         }
         patch.connection = snap;
+        // 顺手试一下当前输入框里有没有刚粘的 key
+        const src = snap.chat_completion_source;
+        const input = document.getElementById(secretKeyName(src));
+        const pasted = input ? String(input.value || '').trim() : '';
+        if (pasted) setLocalKey(avatar, src, pasted);
     }
 
     const r = await setLock(avatar, patch);
@@ -1772,6 +1881,7 @@ function init() {
     }
     installDeleteHook();
     installConnectionGuard();
+    installKeyCapture();
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次
     onContextChanged();

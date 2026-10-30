@@ -340,6 +340,15 @@ await pl.restoreConnectionLock();
 ok('未锁连接时不干预', oaiStub.live.chat_completion_source === 'claude');
 oaiStub.live.chat_completion_source = 'deepseek';
 
+// ===== API Key 本地记录 =====
+ok('secret 键名映射', pl.secretKeyName('custom') === 'api_key_custom' && pl.secretKeyName('DeepSeek') === 'api_key_deepseek');
+pl.setLocalKey('alice.png', 'custom', 'sk-test-123');
+ok('Key 存本机', pl.getLocalKey('alice.png')?.key === 'sk-test-123');
+ok('Key 不写进角色卡', !JSON.stringify(alice().data.extensions).includes('sk-test-123'));
+pl.clearLocalKey('alice.png');
+ok('Key 可清除', pl.getLocalKey('alice.png') === null);
+ok('无记录时 applyKeyForCard 返回 false', (await pl.applyKeyForCard('alice.png')) === false);
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');
