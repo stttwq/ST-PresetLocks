@@ -59,7 +59,7 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 一张卡 = 一个主预设 + 几个可选项。面板默认收起，只留一行摘要；未绑定的卡会自动展开。
 
 ```
-🔒 锁定   v2.0.0                    卡内          ⌄
+🔒 锁定   v2.0.2                    卡内          ⌄
 主预设「夏瑶 天琴座 V2 Beta 1.0」· 提示词 172/215 · 世界书 2 本
 ```
 

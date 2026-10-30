@@ -183,7 +183,7 @@ ok('统计读不到时安全返回', stats === null || typeof stats.constant ===
 use(0, 'chat-a');
 dom.els['avatar_url_pole'].value = 'alice.png';
 pl.refreshEditorRow(true);
-ok('摘要显示主预设与勾选项', String(dom.els['preset_locks_summary'].textContent).includes('主预设'), String(dom.els['preset_locks_summary'].textContent));
+ok('摘要显示主预设与勾选项', String(dom.els['preset_locks_summary'].textContent).includes('预设「B」'), String(dom.els['preset_locks_summary'].textContent));
 
 dom.els['pl_enable_worlds'].checked = true;
 await pl.onEnableChange('worlds', true);

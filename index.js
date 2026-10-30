@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.0.0'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.0.2'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -744,44 +744,78 @@ function presetNames(apiId = '') {
         .filter(Boolean);
 }
 
+const PANEL_CSS = `
+#preset_locks_row { gap: 2px; }
+#preset_locks_row .pl-head { display: flex; align-items: center; gap: 6px; }
+#preset_locks_row .pl-title { font-weight: 600; }
+#preset_locks_row .pl-ver { opacity: .45; font-size: .72em; }
+#preset_locks_row .pl-hint { opacity: .55; font-size: .76em; }
+#preset_locks_row .pl-toggle { margin-left: auto; cursor: pointer; opacity: .65; padding: 0 4px; flex: none; }
+#preset_locks_row .pl-toggle:hover { opacity: 1; }
+#preset_locks_row .pl-sum { font-size: .82em; opacity: .7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#preset_locks_row .pl-body { display: flex; flex-direction: column; gap: 4px; }
+#preset_locks_row .pl-line { display: flex; align-items: center; gap: 6px; font-size: .88em; min-width: 0; }
+#preset_locks_row .pl-line > * { min-width: 0; }
+#preset_locks_row .pl-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#preset_locks_row .pl-stat { flex: none; font-size: .8em; opacity: .55; white-space: nowrap; }
+#preset_locks_row .pl-mini { flex: none; width: 17px; height: 17px; line-height: 17px; text-align: center; border-radius: 4px; background: rgba(0,0,0,.22); cursor: pointer; font-size: .76em; user-select: none; margin-left: 2px; }
+#preset_locks_row .pl-mini:hover { background: rgba(255,255,255,.18); }
+#preset_locks_row .pl-ghost { flex: none; padding: 1px 8px; border-radius: 4px; background: rgba(0,0,0,.22); cursor: pointer; font-size: .8em; white-space: nowrap; }
+#preset_locks_row .pl-ghost:hover { background: rgba(255,255,255,.18); }
+#preset_locks_row .pl-list { max-height: 78px; overflow: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
+#preset_locks_row .pl-results { max-height: 72px; overflow: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
+#preset_locks_row .pl-add { cursor: pointer; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.22); font-size: .82em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#preset_locks_row .pl-add:hover { background: rgba(255,255,255,.18); }
+#preset_locks_row .pl-empty { opacity: .45; font-size: .8em; }
+`;
+
 function injectEditorRow() {
     if (document.getElementById('preset_locks_row')) return true;
     const anchor = document.getElementById('spoiler_free_desc') || document.getElementById('descriptionWrapper');
     if (!anchor || !anchor.parentElement) return false;
 
+    if (!document.getElementById('preset_locks_css')) {
+        const style = document.createElement('style');
+        style.id = 'preset_locks_css';
+        style.textContent = PANEL_CSS;
+        document.head.append(style);
+    }
+
     const row = document.createElement('div');
     row.id = 'preset_locks_row';
     row.className = 'flex-container flexFlowColumn';
     row.innerHTML = `
-        <div class="title_restorable flex gap1 alignitemscenter">
-            <span>🔒 锁定</span>
-            <span class="opacity50p font70p">v${VERSION}</span>
-            <span id="preset_locks_hint" class="opacity50p font70p flex1"></span>
-            <span id="preset_locks_toggle" class="menu_button menu_button_icon" title="展开/收起"><i class="fa-solid fa-chevron-down"></i></span>
+        <div class="pl-head">
+            <span class="pl-title">🔒 锁定</span>
+            <span class="pl-ver">v${VERSION}</span>
+            <span class="pl-hint" id="preset_locks_hint"></span>
+            <span class="pl-toggle" id="preset_locks_toggle" title="展开/收起">▾</span>
         </div>
-        <div id="preset_locks_summary" class="opacity70p font90p"></div>
-        <div id="preset_locks_body" class="flex gap1 flexFlowColumn wide100p" style="display:none">
-            <div class="opacity50p font70p">主预设</div>
-            <select id="preset_locks_select" class="text_pole wide100p"></select>
+        <div class="pl-sum" id="preset_locks_summary"></div>
+        <div class="pl-body" id="preset_locks_body" style="display:none">
+            <select id="preset_locks_select" class="text_pole" title="主预设"></select>
 
-            <label class="flex gap1 alignitemscenter" title="把当前预设的提示词启用/关闭与顺序一起记到这张卡">
-                <input type="checkbox" id="pl_enable_prompts">
-                <span>提示词启用状态与顺序</span>
-                <span id="pl_prompts_info" class="opacity50p font70p"></span>
-            </label>
-            <div id="pl_prompts_actions" class="flex gap1 alignitemscenter" style="display:none">
-                <div id="pl_prompts_capture" class="menu_button">用当前状态更新快照</div>
+            <div class="pl-line">
+                <label class="pl-line" style="flex:1 1 auto" title="把当前预设的提示词启用/关闭与顺序一起记到这张卡">
+                    <input type="checkbox" id="pl_enable_prompts">
+                    <span class="pl-name">提示词开关与顺序</span>
+                    <span class="pl-stat" id="pl_prompts_info"></span>
+                </label>
+                <span class="pl-ghost" id="pl_prompts_capture" style="display:none" title="把当前提示词开关/顺序重新存进这张卡">更新快照</span>
             </div>
 
-            <label class="flex gap1 alignitemscenter" title="这张卡要带哪些世界书">
-                <input type="checkbox" id="pl_enable_worlds">
-                <span>世界书</span>
-                <span id="world_lock_hint" class="opacity50p font70p"></span>
-            </label>
-            <div id="pl_worlds_box" class="flex gap1 flexFlowColumn" style="display:none">
-                <div id="world_lock_list" class="flex gap1 flexFlowColumn"></div>
+            <div class="pl-line">
+                <label class="pl-line" style="flex:1 1 auto" title="这张卡要带哪些世界书">
+                    <input type="checkbox" id="pl_enable_worlds">
+                    <span class="pl-name">世界书</span>
+                    <span class="pl-stat" id="world_lock_hint"></span>
+                </label>
+            </div>
+
+            <div id="pl_worlds_box" style="display:none;flex-direction:column;gap:3px">
+                <div class="pl-list" id="world_lock_list"></div>
                 <input id="world_lock_search" class="text_pole" placeholder="搜索世界书以添加…">
-                <div id="world_lock_results" class="flex gap1 flexFlowColumn" style="max-height:160px;overflow:auto"></div>
+                <div class="pl-results" id="world_lock_results"></div>
             </div>
         </div>`;
     anchor.parentElement.insertBefore(row, anchor);
@@ -813,9 +847,9 @@ function bodyOpen() {
 function setBodyOpen(open) {
     const body = document.getElementById('preset_locks_body');
     if (!body) return;
-    body.style.display = open ? '' : 'none';
-    const icon = document.querySelector('#preset_locks_toggle i');
-    if (icon) icon.className = open ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down';
+    body.style.display = open ? 'flex' : 'none';
+    const toggle = document.getElementById('preset_locks_toggle');
+    if (toggle) toggle.textContent = open ? '▴' : '▾';
     if (open) {
         refreshEditorRow(true);
         refreshWorldRow(true);
@@ -847,6 +881,11 @@ async function worldStats(name) {
 
 function worldStatText(stats) {
     if (!stats) return '';
+    return `${stats.constant}/${stats.keyword}`;
+}
+
+function worldStatTitle(stats) {
+    if (!stats) return '';
     return `常驻 ${stats.constant} / 关键词 ${stats.keyword}`;
 }
 
@@ -877,13 +916,13 @@ async function refreshWorldRow(force = false) {
 
         if (!key) {
             const tip = document.createElement('div');
-            tip.className = 'opacity50p font70p';
+            tip.className = 'pl-empty';
             tip.textContent = '先在左侧选中一张角色卡';
             list.append(tip);
         } else if (!bound.length) {
             const tip = document.createElement('div');
-            tip.className = 'opacity50p font70p';
-            tip.textContent = '还没有绑定世界书，用下面搜索框添加';
+            tip.className = 'pl-empty';
+            tip.textContent = '还没绑定世界书';
             list.append(tip);
         } else {
             for (let i = 0; i < bound.length; i++) {
@@ -892,24 +931,26 @@ async function refreshWorldRow(force = false) {
                 const stats = missing ? null : await worldStats(name);
 
                 const line = document.createElement('div');
-                line.className = 'flex gap1 alignitemscenter';
+                line.className = 'pl-line';
 
                 const idx = document.createElement('span');
-                idx.className = 'opacity50p font80p';
+                idx.className = 'pl-stat';
                 idx.textContent = `${i + 1}.`;
 
                 const label = document.createElement('span');
-                label.className = missing ? 'flex1 opacity50p' : 'flex1';
-                label.textContent = missing ? `${name}（服务器上找不到）` : name;
-                label.title = worldStatText(stats);
+                label.className = missing ? 'pl-name' : 'pl-name';
+                if (missing) label.style.opacity = '.5';
+                label.textContent = missing ? `${name}（找不到）` : name;
+                label.title = missing ? `${name}（服务器上找不到这个文件）` : `${name}${stats ? ' · ' + worldStatTitle(stats) : ''}`;
 
                 const stat = document.createElement('span');
-                stat.className = 'opacity50p font70p';
+                stat.className = 'pl-stat';
                 stat.textContent = worldStatText(stats);
+                stat.title = worldStatTitle(stats);
 
                 const mkBtn = (text, act, title) => {
                     const b = document.createElement('span');
-                    b.className = 'menu_button menu_button_icon';
+                    b.className = 'pl-mini';
                     b.dataset.act = act;
                     b.dataset.world = name;
                     b.title = title;
@@ -917,7 +958,7 @@ async function refreshWorldRow(force = false) {
                     return b;
                 };
 
-                line.append(idx, label, stat, mkBtn('↑', 'up', '上移（序号越小越先注入；第 1 本例外，它在最后）'), mkBtn('↓', 'down', '下移'), mkBtn('×', 'remove', '移除'));
+                line.append(idx, label, stat, mkBtn('↑', 'up', '上移'), mkBtn('↓', 'down', '下移'), mkBtn('×', 'remove', '移除'));
                 list.append(line);
             }
         }
@@ -942,23 +983,25 @@ function refreshWorldResults() {
     const bound = getWorlds(key);
     const q = String(input.value || '').trim().toLowerCase();
     const pool = (worldListCache || []).filter((w) => !bound.includes(w.file_id));
-    const hits = (q ? pool.filter((w) => w.name.toLowerCase().includes(q)) : pool).slice(0, 8);
+    const hits = q ? pool.filter((w) => w.name.toLowerCase().includes(q)).slice(0, 20) : [];
 
     box.replaceChildren();
-    if (!key) return;
+    box.style.display = q ? 'flex' : 'none'; // 不输入就不占位置
+    if (!key || !q) return;
     if (!hits.length) {
         const tip = document.createElement('div');
-        tip.className = 'opacity50p font70p';
-        tip.textContent = q ? '没有匹配的世界书' : '全部已绑定';
+        tip.className = 'pl-empty';
+        tip.textContent = '没有匹配的世界书';
         box.append(tip);
         return;
     }
     for (const w of hits) {
         const add = document.createElement('div');
-        add.className = 'menu_button';
+        add.className = 'pl-add';
         add.dataset.act = 'add';
         add.dataset.world = w.file_id;
         add.textContent = `+ ${w.name}`;
+        add.title = w.name;
         box.append(add);
     }
 }
@@ -1016,6 +1059,7 @@ async function commitWorlds(avatar, list) {
     await syncCharLore(avatar, list);
     toast(list.length ? `世界书 ${list.length} 本` : '已解除世界书绑定');
     refreshWorldRow(true);
+    refreshEditorRow(true);
 }
 
 let editorTimer = null;
@@ -1123,9 +1167,9 @@ function refreshEditorRow(force = false) {
     if (promptsInfo) {
         const snap = lock?.prompts;
         const [total, on] = promptOrderSummary(snap);
-        promptsInfo.textContent = snap ? `${total} 条，启用 ${on}` : '未记录';
+        promptsInfo.textContent = snap ? `${on}/${total}` : '';
     }
-    const promptsActions = document.getElementById('pl_prompts_actions');
+    const promptsActions = document.getElementById('pl_prompts_capture');
     if (promptsActions) promptsActions.style.display = key && lock && promptsOn ? '' : 'none';
 
     const worldsBox = document.getElementById('pl_worlds_box');
@@ -1137,14 +1181,14 @@ function refreshEditorRow(force = false) {
         if (!key) summary.textContent = '';
         else if (!lock) summary.textContent = '未绑定：展开后选主预设与要锁定的项目';
         else {
-            const parts = [`主预设「${lock.preset}」`];
+            const parts = [`预设「${lock.preset}」`];
             if (lock.enable?.prompts && lock.prompts) {
                 const [total, on] = promptOrderSummary(lock.prompts);
-                parts.push(`提示词 ${on}/${total}`);
+                parts.push(`词 ${on}/${total}`);
             }
             if (lock.enable?.worlds) {
                 const n = getWorlds(key).length;
-                parts.push(`世界书 ${n} 本`);
+                parts.push(`书 ${n} 本`);
             }
             summary.textContent = parts.join(' · ');
         }
