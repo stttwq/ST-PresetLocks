@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.0.2'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.0.4'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -29,6 +29,25 @@ const DEFAULTS = {
 
 let popupInstance = null;
 let applying = false;
+let suppressRegexNotice = false;
+
+/**
+ * 酒馆的正则扩展在预设应用时会弹「重新加载聊天以使正则生效」。
+ * 我们切预设时刚刚进过聊天，这条提示只会干扰人（且正则本身已生效），所以在自动切换期间滤掉它。
+ * 手动切预设不受影响。
+ */
+function installToastFilter() {
+    if (typeof toastr === 'undefined' || window.__plToastWrapped) return;
+    window.__plToastWrapped = true;
+    for (const level of ['info', 'success', 'warning', 'error']) {
+        const original = toastr[level].bind(toastr);
+        toastr[level] = function (msg, title, ...rest) {
+            const text = `${title || ''} ${msg || ''}`;
+            if (suppressRegexNotice && /正则|regex/i.test(text)) return undefined;
+            return original(msg, title, ...rest);
+        };
+    }
+}
 
 // ===== 本机兜底记录（settings.json） =====
 
@@ -459,8 +478,13 @@ async function applyPreset(name) {
         toast(`预设「${name}」已不存在，请重新存一次`, 'warning');
         return false;
     }
-    await pm.selectPreset(found);
-    await settlePreset(name);
+    suppressRegexNotice = true;
+    try {
+        await pm.selectPreset(found);
+        await settlePreset(name);
+    } finally {
+        suppressRegexNotice = false;
+    }
     return true;
 }
 
@@ -668,7 +692,15 @@ async function lockSatisfied(lock) {
     return true;
 }
 
-async function onContextChanged() {
+// 多个事件（CHAT_CHANGED / CHAT_LOADED）会几乎同时触发，必须串行，否则两道都看到旧状态、重复切一次
+let contextChain = Promise.resolve();
+
+function onContextChanged() {
+    contextChain = contextChain.then(runContextChanged, runContextChanged);
+    return contextChain;
+}
+
+async function runContextChanged() {
     // 打开卡/聊天时同步世界书（只有勾了「世界书」才动）
     const activeKey = cardKey();
     const activeLock = activeKey ? getLock(activeKey) : null;
@@ -1437,6 +1469,7 @@ function injectMenuItem() {
 
 function init() {
     console.log(`${LOG} v${VERSION} 已加载`);
+    installToastFilter();
     settings();
     migrateByName();
     injectMenuItem();
