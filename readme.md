@@ -54,6 +54,18 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 酒馆模块内部的 `world_info` 和 `extension_settings.world_info` **不是同一个对象**。只写后者，界面上看得见但扫描时根本不生效；只写前者，当下生效但刷新就没了。所以两处都会写。
 
+## 切换预设后的收尾（不需要刷新页面）
+
+切预设在酒馆里是异步的：`change` 事件只是排队，真正应用在后面的 Promise 里。本扩展切完会做三件事：
+
+1. `await` 酒馆自己的 `getPresetApplicationPromise()`（官方信号，它自己的 `/preset` 后面接 `/api` 也靠这个）
+2. 强制重建一次提示词管理器（`sanitizeServiceSettings()` + `render(false)`；酒馆平时只 debounce 重渲染，跨预设时可能来不及）
+3. **逐项核对**：把活着的设置与预设定义（`openai_settings[名字]`）逐个字段比。不一样就重放一次 `change` 让它自己重算；还有差就在控制台列出字段名
+
+实测（你的实例，ST 1.19.0）：进入绑定卡的自动切换后，与预设定义对比 **0 项不一致**、67 个提示词内容全一致、`prompt_order` 一致。
+
+控制台出现 `仍有 N 项与预设定义不同` 时，把打印出来的字段名发我——那才是真正残留的东西（插件动态内容不算，已排除 `prompts` / `prompt_order` / `extensions` / 代理字段）。
+
 ## 性能
 
 实测数据（浏览器内编号计数，不是估算）：

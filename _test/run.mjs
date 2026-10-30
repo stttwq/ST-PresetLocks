@@ -1,4 +1,5 @@
 import { state, extension_settings, dom, makeFakeSelect, pmStub } from './stubs.mjs';
+import * as oaiStub from './openai-stub.mjs';
 import * as pl from './pl.mjs';
 
 const results = [];
@@ -278,6 +279,25 @@ ok('upsertCharLore 传空数组就删条目', pl.upsertCharLore(storeA, 'c', [])
 import { readFileSync } from 'node:fs';
 const manifestVersion = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')).version;
 ok('index.js 内的 VERSION 与 manifest 一致', pl.VERSION === manifestVersion, `code=${pl.VERSION} manifest=${manifestVersion}`);
+
+// ===== 切换后的收尾与自检 =====
+oaiStub.state.live = { temperature: 0.6, top_p: 0.9, chat_completion_source: 'deepseek', openai_model: 'deepseek-chat' };
+ok('活状态与预设定义一致时无残渣', pl.verifyPreset('P1', oaiStub).length === 0, JSON.stringify(pl.verifyPreset('P1', oaiStub)));
+
+oaiStub.state.live.temperature = 0.1;
+const mismatch = pl.verifyPreset('P1', oaiStub);
+ok('不一致的字段能被揪出来', JSON.stringify(mismatch) === '["temperature"]', JSON.stringify(mismatch));
+
+const beforeSanitize = oaiStub.state.sanitized;
+const left = await pl.settlePreset('P1');
+ok('收尾时强制重建提示词管理器', oaiStub.state.sanitized > beforeSanitize, `sanitize=${oaiStub.state.sanitized}`);
+ok('残渣无法自愈时报出字段名', JSON.stringify(left) === '["temperature"]', JSON.stringify(left));
+
+oaiStub.state.live.temperature = 0.6;
+const leftClean = await pl.settlePreset('P1');
+ok('无残渣时静默通过（不报错、不回滚）', leftClean.length === 0);
+
+ok('未知预设名不抛异常', pl.verifyPreset('不存在的预设', oaiStub).length === 0);
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;

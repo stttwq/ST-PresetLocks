@@ -11,13 +11,15 @@ while (lastImport + 1 < lines.length && /^(import |\s+[A-Za-z_,{}\s]+\} from )/.
 
 const stub = `import { eventSource, event_types, saveSettingsDebounced, getRequestHeaders, extension_settings, getContext, getPresetManager, Popup, POPUP_TYPE, POPUP_RESULT, callGenericPopup, state } from './stubs.mjs';`;
 
-const out = [...lines.slice(0, firstImport), stub, ...lines.slice(lastImport + 1)].join('\n');
+const out = [...lines.slice(0, firstImport), stub, ...lines.slice(lastImport + 1)]
+    .join('\n')
+    .replace(/import\('\.\.\/\.\.\/\.\.\/openai\.js'\)/g, "import('./openai-stub.mjs')");
 
 fs.writeFileSync(
     path.join(__dirname, 'pl.mjs'),
     out +
         `
-export { settings, getLock, setLock, clearLock, migrateByName, cardKey, cardName, applyPreset, onContextChanged, currentPresetName, refreshEditorRow, onEditorChange, refreshWorldRow, onWorldToggle, getWorlds, writeCardWorlds, syncCharLore, upsertCharLore, worldRefs, decideWorldDelete, onCharacterDeleted, pendingWorldDelete, refreshStWorldList, VERSION };
+export { settings, getLock, setLock, clearLock, migrateByName, cardKey, cardName, applyPreset, onContextChanged, currentPresetName, refreshEditorRow, onEditorChange, refreshWorldRow, onWorldToggle, getWorlds, writeCardWorlds, syncCharLore, upsertCharLore, worldRefs, decideWorldDelete, onCharacterDeleted, pendingWorldDelete, refreshStWorldList, settlePreset, verifyPreset, VERSION };
 `,
 );
 console.log('pl.mjs 生成完毕，替换了 import 行', firstImport + 1, '-', lastImport + 1);

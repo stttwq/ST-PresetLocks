@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '1.6.0'; // 与 manifest.json 同步（测试会校）
+const VERSION = '1.7.0'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -445,7 +445,99 @@ async function applyPreset(name) {
         return false;
     }
     await pm.selectPreset(found);
+    await settlePreset(name);
     return true;
+}
+
+// ===== 切换后的收尾（目标是：不需要刷新页面） =====
+
+let openAiModulePromise = null;
+
+/** openai.js 只动态 import 一次。取不到（旧版/异常）就返回 null，不影响主流程。 */
+async function getOpenAiModule() {
+    if (!openAiModulePromise) {
+        openAiModulePromise = import('../../../openai.js').catch(() => null);
+    }
+    return openAiModulePromise;
+}
+
+/**
+ * 把酒馆「以后才会做」的那几步当场做完：
+ * 1. 等它自己的预设应用 Promise 结束（官方信号，/preset 后面接 /api 也靠它）
+ * 2. 提示词管理器强制重建一次（它平时只是 debounce 重渲染，跨预设时可能来不及）
+ * 3. 逐项核对活状态与预设定义，不一样就把 change 再打一次让它自己重算
+ */
+async function settlePreset(name) {
+    const oai = await getOpenAiModule();
+    if (!oai) return [];
+
+    try {
+        if (typeof oai.getPresetApplicationPromise === 'function') {
+            await oai.getPresetApplicationPromise();
+        }
+    } catch (error) {
+        console.warn(`${LOG} 等待预设应用结束失败:`, error);
+    }
+
+    try {
+        const pmgr = oai.promptManager;
+        if (pmgr && typeof pmgr.sanitizeServiceSettings === 'function') {
+            pmgr.sanitizeServiceSettings();
+            if (typeof pmgr.render === 'function') pmgr.render(false);
+        }
+    } catch (error) {
+        console.warn(`${LOG} 提示词管理器重建失败:`, error);
+    }
+
+    let mismatch = verifyPreset(name, oai);
+    if (!mismatch.length) return mismatch;
+
+    // 还有残渣：再触发一次 change 让酒馆自己重新套一遍（比我们逐项写回安全）
+    console.warn(`${LOG} 切到「${name}」后仍有 ${mismatch.length} 项不一致，重放一次 change:`, mismatch.slice(0, 8));
+    try {
+        const el = presetSelectEl();
+        if (el) {
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            if (typeof oai.getPresetApplicationPromise === 'function') await oai.getPresetApplicationPromise();
+        }
+    } catch (error) {
+        console.warn(`${LOG} 重放 change 失败:`, error);
+    }
+    mismatch = verifyPreset(name, oai);
+    if (mismatch.length) {
+        console.warn(`${LOG} 仍有 ${mismatch.length} 项与预设定义不同（多为插件动态内容，可忽略）:`, mismatch.slice(0, 8));
+    }
+    return mismatch;
+}
+
+/** 拿活的设置和预设定义逐项比，返回不一致的字段名。 */
+function verifyPreset(name, oai) {
+    try {
+        const names = oai.openai_setting_names;
+        const presets = oai.openai_settings;
+        const presetName = name || currentPresetName();
+        if (!names || !presets || !presetName) return [];
+
+        const idx = typeof names === 'object' && !Array.isArray(names) ? names[presetName] : Array.isArray(names) ? names.indexOf(presetName) : -1;
+        const def = idx === undefined || idx === null || idx < 0 ? null : presets[idx];
+        if (!def) return [];
+
+        const live = typeof oai.getChatCompletionPreset === 'function' ? oai.getChatCompletionPreset() : null;
+        if (!live) return [];
+
+        // prompts / prompt_order / extensions 是插件动态区，不参与判定
+        const skip = new Set(['name', 'prompts', 'prompt_order', 'extensions', 'reverse_proxy', 'proxy_password', 'proxy_preset']);
+        const bad = [];
+        for (const k of Object.keys(def)) {
+            if (skip.has(k)) continue;
+            if (JSON.stringify(def[k]) === JSON.stringify(live[k])) continue;
+            bad.push(k);
+        }
+        return bad;
+    } catch (error) {
+        console.warn(`${LOG} 校验预设一致性失败:`, error);
+        return [];
+    }
 }
 
 async function onContextChanged() {
