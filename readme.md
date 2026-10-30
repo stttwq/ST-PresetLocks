@@ -86,6 +86,19 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 实测（你的实例）：勾上下文模板 → 卡内写入 + 界面立即变；手动把 UI 改回别的值 → 重新进对话自动拉回锁定值；取消锁定 → 卡内 `extra` 清空。
 
+## SPreset 按钮残留（已处理）
+
+SPreset 是**预设自带的插件**（存在 `data.extensions.SPreset` 里），它会往页面插按钮和菜单项，但切到其它预设时从不拆除 → 以前必须刷新。
+
+现在：切到**不带 SPreset 的预设**时，把 SPreset 的入口（`.spreset-button-container`、上传 log 菜单项）隐起来；切回带 SPreset 的预设时自动恢复。不删元素，不破坏它自己的 hook。
+
+实测（你的实例）：
+
+| 切到 | 按钮状态 |
+| --- | --- |
+| 梦鲸思客V4-1015（无 SPreset） | `display:none` 隐藏 |
+| 【小猫之神·喵赛亚】1.6（有 SPreset） | 恢复默认显示 |
+
 ## 切换预设后的收尾（不需要刷新页面）
 
 切预设在酒馆里是异步的：`change` 事件只是排队，真正应用在后面的 Promise 里。本扩展切完会做三件事：
@@ -178,7 +191,7 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 ```bash
 cd _test
 node build.js   # 生成 pl.mjs
-node run.mjs    # 61 项断言
+node run.mjs    # 68 项断言
 ```
 
 覆盖：卡内写入、卡内优先、本机兜底、写卡失败降级、明确清除不被兜底复活、群聊跳过、预设不存在、角色改名、旧版记录迁移、角色卡界面下拉的渲染与写入、`characterId` 字符串、三种预设下拉来源形态、世界书绑定与删卡连带删除的各条安全分支。

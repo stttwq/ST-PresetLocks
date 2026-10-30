@@ -1,4 +1,4 @@
-import { state, extension_settings, dom, makeFakeSelect, pmStub, extraState } from './stubs.mjs';
+import { state, extension_settings, dom, makeFakeSelect, pmStub, extraState, makeElem } from './stubs.mjs';
 import * as oaiStub from './openai-stub.mjs';
 import * as pl from './pl.mjs';
 
@@ -346,6 +346,26 @@ extension_settings.world_info.charLore = [];
 await pl.writeCardWorlds('alice.png', ['W1', 'W2', 'W3']);
 await pl.syncCharLore('alice.png', ['W1', 'W2', 'W3']);
 ok('多本时 charLore 倒序存储', JSON.stringify(extension_settings.world_info.charLore) === '[{"name":"alice","extraBooks":["W3","W2"]}]', JSON.stringify(extension_settings.world_info.charLore));
+
+// SPreset 预设：靠 extensions.SPreset 判定；切到不带它的预设时把入口隐起来
+import * as oaiStub2 from './openai-stub.mjs';
+oaiStub2.openai_setting_names.SP = 2;
+oaiStub2.openai_settings.push({ name: 'SP', temperature: 1, extensions: { SPreset: { anything: true } } });
+ok('带 SPreset 的预设被识别', pl.presetHasSPreset(oaiStub2, 'SP') === true);
+ok('不带 SPreset 的预设被识别', pl.presetHasSPreset(oaiStub2, 'P1') === false);
+ok('未知预设名返回 null（不擅自改 UI）', pl.presetHasSPreset(oaiStub2, '不存在') === null);
+
+const btn = makeElem('div');
+btn.className = 'spreset-button-container';
+dom.els['x'] = null;
+const fakeDoc = globalThis.document;
+const origQSA = fakeDoc.querySelectorAll;
+fakeDoc.querySelectorAll = (sel) => (sel === '.spreset-button-container' ? [btn] : []);
+const hideRes = pl.syncSPresetUI(oaiStub2, 'P1');
+ok('无 SPreset 时隐起按钮', hideRes && hideRes.has === false && btn.style.display === 'none', JSON.stringify(hideRes));
+const showRes = pl.syncSPresetUI(oaiStub2, 'SP');
+ok('切回带 SPreset 的预设时恢复显示', showRes && showRes.has === true && btn.style.display === '', JSON.stringify(showRes));
+fakeDoc.querySelectorAll = origQSA;
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;

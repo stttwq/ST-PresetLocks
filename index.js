@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '1.8.2'; // 与 manifest.json 同步（测试会校）
+const VERSION = '1.8.3'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -513,6 +513,8 @@ async function settlePreset(name) {
         console.warn(`${LOG} 提示词管理器重建失败:`, error);
     }
 
+    syncSPresetUI(oai, name);
+
     let mismatch = verifyPreset(name, oai);
     if (!mismatch.length) return mismatch;
 
@@ -532,6 +534,39 @@ async function settlePreset(name) {
         console.warn(`${LOG} 仍有 ${mismatch.length} 项与预设定义不同（多为插件动态内容，可忽略）:`, mismatch.slice(0, 8));
     }
     return mismatch;
+}
+
+/** 这个预设是不是带 SPreset 数据（靠 extensions.SPreset 判定）。 */
+function presetHasSPreset(oai, name) {
+    try {
+        const names = oai?.openai_setting_names;
+        const presets = oai?.openai_settings;
+        if (!names || !presets || !name) return null;
+        const idx = typeof names === 'object' && !Array.isArray(names) ? names[name] : -1;
+        const def = idx === undefined || idx === null || idx < 0 ? null : presets[idx];
+        if (!def) return null;
+        return !!(def.extensions && def.extensions.SPreset);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * SPreset 是预设自带的插件，它会往页面里插按钮/菜单项，但从不拆除。
+ * 切到不带 SPreset 的预设时把它隐起来（不删除，切回去还能自动恢复）。
+ */
+function syncSPresetUI(oai, name) {
+    const has = presetHasSPreset(oai, name);
+    if (has === null) return null;
+    let touched = 0;
+    for (const sel of ['.spreset-button-container', '#spreset_upload_log']) {
+        document.querySelectorAll(sel).forEach((el) => {
+            if (!el || !el.style) return;
+            el.style.display = has ? '' : 'none';
+            touched++;
+        });
+    }
+    return { has, touched };
 }
 
 /** 拿活的设置和预设定义逐项比，返回不一致的字段名。 */

@@ -130,6 +130,7 @@ export function makeElem(tag) {
         children: [],
         dataset: {},
         className: '',
+        style: {},
         textContent: '',
         type: '',
         checked: false,
