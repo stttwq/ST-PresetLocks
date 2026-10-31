@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.2.8'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.2.9'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -755,20 +755,22 @@ function applyConnection(oai, snapshot) {
     return changed;
 }
 
-/** 当前卡锁了连接时，把连接拉回快照。 */
+/** 当前卡锁了连接时，把连接拉回卡上的快照；没锁就用全局基线。 */
 async function restoreConnectionLock() {
     if (restoringConnection) return [];
     const key = cardKey();
-    if (!key) return [];
-    const lock = getLock(key);
-    if (!lock?.enable?.connection || !lock.connection) return [];
+    const lock = key ? getLock(key) : null;
+    const cardSnap = lock?.enable?.connection ? lock.connection : null;
+    const baseSnap = settings().baseline?.connection || null;
+    const snap = cardSnap || baseSnap;
+    if (!snap) return [];
 
     const oai = await getOpenAiModule();
     if (!oai) return [];
 
     restoringConnection = true;
     try {
-        return applyConnection(oai, lock.connection);
+        return applyConnection(oai, snap);
     } finally {
         setTimeout(() => {
             restoringConnection = false;
@@ -776,15 +778,36 @@ async function restoreConnectionLock() {
     }
 }
 
+/** 拍一份全局基线（用户第一次开启连接保护，或手动点「更新基线」时调用）。 */
+async function captureBaseline() {
+    const oai = await getOpenAiModule();
+    const snap = oai ? captureConnection(oai) : null;
+    if (!snap) return false;
+    settings().baseline = { connection: snap, at: Date.now() };
+    saveSettings();
+    return true;
+}
+
 /**
- * 除了本扩展与手动改 API 设置，任何“切预设”都不得改掉连接配置。
- * 所以监听酒馆的预设应用事件，事后把连接拉回快照。
+ * 除了本扩展与手动改 API 设置，任何预设切换都不得改掉连接配置。
+ * - 当前卡锁了连接 → 用卡上的快照
+ * - 没锁 → 用全局基线（首次开启时自动拍一份）
+ * 另外这里顺便同步 SPreset 入口的隐现（手动切预设也要生效）。
  */
 function installConnectionGuard() {
     if (!event_types?.OAI_PRESET_CHANGED_AFTER) return;
-    eventSource.on(event_types.OAI_PRESET_CHANGED_AFTER, () => {
+    eventSource.on(event_types.OAI_PRESET_CHANGED_AFTER, (payload) => {
         if (applying || restoringConnection) return;
-        restoreConnectionLock().catch((error) => console.warn(`${LOG} 恢复连接失败:`, error));
+        Promise.resolve()
+            .then(async () => {
+                const oai = await getOpenAiModule();
+                if (oai) {
+                    const name = payload?.presetName || currentPresetName();
+                    syncSPresetUI(oai, name);
+                }
+                await restoreConnectionLock();
+            })
+            .catch((error) => console.warn(`${LOG} 恢复连接失败:`, error));
     });
 }
 
@@ -1199,6 +1222,7 @@ function injectEditorRow() {
                     <span class="pl-stat" id="pl_conn_info"></span>
                 </label>
                 <span class="pl-ghost" id="pl_conn_capture" style="display:none" title="用当前 API 连接覆盖这张卡上的记录">更新连接</span>
+                <span class="pl-ghost" id="pl_conn_baseline" title="把当前连接存为全局基线：未锁定连接的卡切预设时会回到这里">存为基线</span>
             </div>
             <div class="pl-line" id="pl_key_line" style="display:none">
                 <span class="pl-stat" id="pl_key_info"></span>
@@ -1246,6 +1270,14 @@ function injectEditorRow() {
     row.querySelector('#pl_prompts_capture').addEventListener('click', () => onCapturePrompts());
     row.querySelector('#pl_enable_connection').addEventListener('change', (e) => onEnableChange('connection', e.target.checked));
     row.querySelector('#pl_conn_capture').addEventListener('click', () => onCaptureConnection());
+    row.querySelector('#pl_conn_baseline').addEventListener('click', async () => {
+        if (await captureBaseline()) {
+            toast('已存为全局基线：没锁连接的卡切预设时回到这里', 'success', true);
+            refreshEditorRow(true);
+        } else {
+            toast('读不到当前 API 连接', 'warning', true);
+        }
+    });
     row.querySelector('#pl_key_clear').addEventListener('click', () => {
         const avatar = document.getElementById('preset_locks_select')?.dataset.avatar || '';
         clearLocalKey(avatar);
@@ -1646,7 +1678,10 @@ function refreshEditorRow(force = false) {
     const cbConn = document.getElementById('pl_enable_connection');
     if (cbConn) cbConn.checked = connOn;
     const connInfo = document.getElementById('pl_conn_info');
-    if (connInfo) connInfo.textContent = lock?.connection ? String(lock.connection.chat_completion_source || '') : '';
+    if (connInfo) {
+        if (lock?.connection) connInfo.textContent = String(lock.connection.chat_completion_source || '');
+        else connInfo.textContent = settings().baseline?.connection ? `基线 ${settings().baseline.connection.chat_completion_source || ''}` : '';
+    }
     const connCapture = document.getElementById('pl_conn_capture');
     if (connCapture) connCapture.style.display = key && lock && connOn ? '' : 'none';
 
@@ -2142,6 +2177,7 @@ function init() {
     installKeyCapture();
     wireKeepPosition();
     applyKeepPosition();
+    if (!settings().baseline) captureBaseline();
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次
     onContextChanged();
