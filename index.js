@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.3.1'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.2'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -1175,12 +1175,22 @@ const PANEL_CSS = `
 #preset_locks_row .pl-mini:hover { background: rgba(255,255,255,.18); }
 #preset_locks_row .pl-ghost { flex: none; padding: 1px 8px; border-radius: 4px; background: rgba(0,0,0,.22); cursor: pointer; font-size: .8em; white-space: nowrap; }
 
-#pl_decision { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px; margin: 0 0 2px; border-radius: 6px; background: rgba(0,0,0,.26); font-size: .86em; }
-#pl_decision .pl-dc-sum { opacity: .82; line-height: 1.35; cursor: pointer; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
-#pl_decision.pl-dc-expanded .pl-dc-sum { -webkit-line-clamp: unset; display: block; }
-#pl_decision .pl-dc-btns { display: flex; flex-wrap: wrap; gap: 4px; }
-#pl_decision .pl-dc-btn { flex: 1 1 30%; min-width: 120px; padding: 3px 8px; border-radius: 5px; background: rgba(255,255,255,.09); cursor: pointer; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-#pl_decision .pl-dc-btn:hover { background: rgba(255,255,255,.2); }
+#pl_decision { position: relative; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; padding: 0 6px 3px; font-size: .86em; flex: none; }
+#pl_dc_fab { cursor: pointer; user-select: none; padding: 3px 12px; border-radius: 999px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.9)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); opacity: .92; white-space: nowrap; }
+#pl_dc_fab:hover { opacity: 1; }
+#pl_dc_panel { display: none; position: absolute; right: 6px; bottom: calc(100% + 4px); width: min(640px, calc(100vw - 24px)); max-height: min(62vh, 460px); overflow-y: auto; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-radius: 10px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.95)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 4000; }
+#pl_decision.pl-dc-open #pl_dc_panel { display: flex; }
+#pl_dc_panel .pl-dc-head { display: flex; align-items: center; gap: 8px; font-size: .92em; opacity: .8; }
+#pl_dc_panel .pl-dc-title { font-weight: 600; }
+#pl_dc_panel .pl-dc-meta { flex: 1 1 auto; opacity: .7; }
+#pl_dc_panel .pl-dc-x { cursor: pointer; padding: 0 4px; opacity: .7; flex: none; }
+#pl_dc_panel .pl-dc-x:hover { opacity: 1; }
+#pl_dc_panel .pl-dc-sum { line-height: 1.45; white-space: pre-wrap; word-break: break-word; padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,.12); }
+#pl_dc_panel .pl-dc-opts { display: flex; flex-direction: column; gap: 4px; }
+#pl_dc_panel .pl-dc-opt { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+#pl_dc_panel .pl-dc-opt:hover { background: rgba(128,128,128,.2); border-color: var(--SmartThemeBorderColor, rgba(128,128,128,.45)); }
+#pl_dc_panel .pl-dc-num { flex: none; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 4px; background: rgba(128,128,128,.22); font-size: .8em; }
+#pl_dc_panel .pl-dc-txt { flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
 #preset_locks_row .pl-ghost:hover { background: rgba(255,255,255,.18); }
 #preset_locks_row .pl-list { max-height: 78px; overflow: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
 #preset_locks_row .pl-results { max-height: 72px; overflow: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
@@ -2186,13 +2196,34 @@ function injectDecisionBar() {
     bar.id = 'pl_decision';
     bar.style.display = 'none';
     bar.innerHTML = `
-        <div class="pl-dc-sum" id="pl_dc_sum"></div>
-        <div class="pl-dc-btns" id="pl_dc_btns"></div>`;
+        <div id="pl_dc_fab" title="展开剧情梗概与行动选项">📋 <span id="pl_dc_fab_n"></span></div>
+        <div id="pl_dc_panel">
+            <div class="pl-dc-head">
+                <span class="pl-dc-title">剧情梗概 · 行动选项</span>
+                <span class="pl-dc-meta" id="pl_dc_meta"></span>
+                <span class="pl-dc-x" id="pl_dc_close" title="收起">✕</span>
+            </div>
+            <div class="pl-dc-sum" id="pl_dc_sum"></div>
+            <div class="pl-dc-opts" id="pl_dc_opts"></div>
+        </div>`;
     anchor.parentElement.insertBefore(bar, anchor);
 
-    bar.querySelector('#pl_dc_sum').addEventListener('click', () => bar.classList.toggle('pl-dc-expanded'));
-    bar.querySelector('#pl_dc_btns').addEventListener('click', (event) => onDecisionClick(event));
+    bar.querySelector('#pl_dc_fab').addEventListener('click', () => toggleDecisionPanel());
+    bar.querySelector('#pl_dc_close').addEventListener('click', () => toggleDecisionPanel(false));
+    bar.querySelector('#pl_dc_opts').addEventListener('click', (event) => onDecisionClick(event));
     return true;
+}
+
+function decisionPanelOpen() {
+    const bar = document.getElementById('pl_decision');
+    return !!(bar && bar.classList.contains('pl-dc-open'));
+}
+
+function toggleDecisionPanel(force) {
+    const bar = document.getElementById('pl_decision');
+    if (!bar) return;
+    const open = typeof force === 'boolean' ? force : !bar.classList.contains('pl-dc-open');
+    bar.classList.toggle('pl-dc-open', open);
 }
 
 /** 按最新一楼重建决策条；内容没变就不碰 DOM。 */
@@ -2210,6 +2241,7 @@ function refreshDecisionBar(force = false) {
     if (!text) {
         bar.style.display = 'none';
         decisionSig = '';
+        toggleDecisionPanel(false);
         return;
     }
 
@@ -2221,36 +2253,51 @@ function refreshDecisionBar(force = false) {
 
     const { summary, options } = extractDecision(text);
     const sumEl = bar.querySelector('#pl_dc_sum');
-    const btnsEl = bar.querySelector('#pl_dc_btns');
+    const optsEl = bar.querySelector('#pl_dc_opts');
+    const metaEl = bar.querySelector('#pl_dc_meta');
+    const fabN = bar.querySelector('#pl_dc_fab_n');
 
     if (!summary && !options.length) {
         bar.style.display = 'none';
+        toggleDecisionPanel(false);
         return;
     }
 
     bar.style.display = 'flex';
+    if (fabN) fabN.textContent = options.length ? `${options.length} 选项` : '梗概';
+    if (metaEl) metaEl.textContent = options.length ? `${options.length} 个可选行动` : '本预设不提供选项';
+
     if (sumEl) {
         sumEl.textContent = summary || '';
-        sumEl.title = summary || '';
         sumEl.style.display = summary ? '' : 'none';
     }
-    if (btnsEl) {
-        btnsEl.replaceChildren();
+
+    if (optsEl) {
+        optsEl.replaceChildren();
         options.forEach((opt, i) => {
-            const btn = document.createElement('div');
-            btn.className = 'pl-dc-btn';
-            btn.dataset.idx = String(i);
-            btn.textContent = opt.length > 42 ? `${opt.slice(0, 42)}…` : opt;
-            btn.title = opt;
-            btnsEl.append(btn);
+            const row = document.createElement('div');
+            row.className = 'pl-dc-opt';
+            row.dataset.idx = String(i);
+            row.title = '点击填入输入框';
+
+            const num = document.createElement('span');
+            num.className = 'pl-dc-num';
+            num.textContent = String(i + 1).padStart(2, '0');
+
+            const txt = document.createElement('span');
+            txt.className = 'pl-dc-txt';
+            txt.textContent = opt;
+
+            row.append(num, txt);
+            optsEl.append(row);
         });
-        btnsEl.style.display = options.length ? '' : 'none';
+        optsEl.style.display = options.length ? '' : 'none';
     }
 }
 
-/** 点选项 → 去掉开头的表情/颜文字，填进输入框（可再改）。 */
+/** 点选项 → 填进输入框（可再改），面板自动收起。 */
 function onDecisionClick(event) {
-    const btn = event.target?.closest?.('.pl-dc-btn');
+    const btn = event.target?.closest?.('.pl-dc-opt');
     if (!btn) return;
     const text = latestAiMessage();
     const options = extractOptions(text);
@@ -2262,6 +2309,7 @@ function onDecisionClick(event) {
     ta.value = picked;
     ta.dispatchEvent(new Event('input', { bubbles: true }));
     ta.focus();
+    toggleDecisionPanel(false);
     toast('已填入输入框，可直接改再发', 'success', true);
 }
 
@@ -2275,6 +2323,22 @@ function wireDecisionBar() {
     if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, wake);
     if (event_types.MESSAGE_SWIPE_DELETED) eventSource.on(event_types.MESSAGE_SWIPE_DELETED, wake);
     eventSource.on(event_types.CHAT_CHANGED, wake);
+
+    // 点面板外面收起（但点选项、点 FAB 不算）
+    document.addEventListener(
+        'click',
+        (event) => {
+            if (!decisionPanelOpen()) return;
+            const bar = document.getElementById('pl_decision');
+            if (!bar) return;
+            if (event.target instanceof Node && bar.contains(event.target)) return;
+            toggleDecisionPanel(false);
+        },
+        true,
+    );
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') toggleDecisionPanel(false);
+    });
 }
 
 // ===== 面板 =====
