@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.3.5'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.6'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -2108,6 +2108,7 @@ function wireKeepPosition() {
 let decisionSig = '';
 let decisionWired = false;
 let isGenerating = false;
+let genWatchdog = null;
 
 function stripTags(input) {
     return String(input || '')
@@ -2340,11 +2341,27 @@ function wireDecisionBar() {
     if (event_types.GENERATION_STARTED) {
         eventSource.on(event_types.GENERATION_STARTED, () => {
             isGenerating = true;
+            // 保险：若生成异常中断、END/STOP 事件都没来，别永久卡在“生成中”
+            if (genWatchdog) clearTimeout(genWatchdog);
+            genWatchdog = setTimeout(() => {
+                if (!isGenerating) return;
+                isGenerating = false;
+                refreshDecisionBar(true);
+            }, 180000);
+        });
+    }
+    // 停止生成也算一次“尘埃落定”，立即按当前内容刷一次
+    if (event_types.GENERATION_STOPPED) {
+        eventSource.on(event_types.GENERATION_STOPPED, () => {
+            isGenerating = false;
+            if (genWatchdog) clearTimeout(genWatchdog);
+            setTimeout(() => refreshDecisionBar(true), 400);
         });
     }
     if (event_types.GENERATION_ENDED) {
         eventSource.on(event_types.GENERATION_ENDED, () => {
             isGenerating = false;
+            if (genWatchdog) clearTimeout(genWatchdog);
             refreshDecisionBar(true);
         });
     }
