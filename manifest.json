@@ -4,10 +4,10 @@
     "requires": [],
     "optional": [],
     "js": "index.js",
-    "author": "aikohanasaki（原版）· 中文精简版",
-    "version": "2.3.6",
+    "author": "stttwq",
+    "version": "2.3.7",
     "license": "AGPL-3.0",
-    "homePage": "https://github.com/aikohanasaki/SillyTavern-CharacterLocks",
+    "homePage": "https://github.com/stttwq/ST-PresetLocks",
     "auto_update": false,
-    "description": "在角色卡管理界面里直接绑定预设和世界书：预设随卡自动切换，世界书随卡生效且删卡时可一并删除。绑定都写进角色卡自己的 data.extensions，换酒馆一起走。"
+    "description": "按角色卡锁定预设、提示词开关与顺序、世界书、API 连接；附带阅读位置锁定与剧情梗概/行动选项决策条。"
 }

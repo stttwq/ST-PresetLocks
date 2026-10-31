@@ -2,8 +2,6 @@
 
 给每张角色卡配一套独立的运行环境：预设、提示词开关、世界书、API 连接，切到哪张卡就自动到位。
 
-基于 [Character Locks v4.0.0](https://github.com/aikohanasaki/SillyTavern-CharacterLocks)（aikohanasaki，AGPL-3.0）重做。
-
 ## 有什么用
 
 - **一张卡一套预设**：同一张卡的所有聊天共用一个预设，切角色自动换回，不用手动选
@@ -97,4 +95,4 @@ node run.mjs    # 全部断言
 
 ## 许可
 
-AGPL-3.0，与原版一致，`LICENSE` 已随附。
+AGPL-3.0，完整许可见 [LICENSE](LICENSE)。

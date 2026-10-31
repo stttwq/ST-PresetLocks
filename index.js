@@ -4,8 +4,6 @@
  *
  * 绑定写在角色卡自己的 data.extensions.presetLocks 里，卡走预设走；
  * 同时在本机 settings.json 留一份兜底，写卡失败（无权限/旧版本）也能用。
- *
- * 基于 Character Locks v4.0.0 (aikohanasaki, AGPL-3.0) 重做的中文精简版。
  */
 
 import { eventSource, event_types, saveSettingsDebounced, getRequestHeaders } from '../../../../script.js';
@@ -15,7 +13,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.3.6'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.7'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
