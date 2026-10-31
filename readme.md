@@ -56,6 +56,26 @@ SillyTavern/public/scripts/extensions/third-party/ST-PresetLocks/
 
 酒馆模块内部的 `world_info` 和 `extension_settings.world_info` **不是同一个对象**。只写后者，界面上看得见但扫描时根本不生效；只写前者，当下生效但刷新就没了。所以两处都会写。
 
+## 阅读位置锁定（v2.2.6 起）
+
+发消息、生成、流式输出都不会再把视图拽到底部；你翻到哪就停在哪。
+
+- 面板底部：☑ 阅读位置锁定 + 「回到底部」
+- 只有你**本来就在底部**时才会跟随新消息；一旦往上翻，就不再被拽
+- 切聊天时仍然会自动定位到最新一条（新会话没有“我在读哪里”这回事）
+
+实现方式：把酒馆自己的 `power_user.auto_scroll_chat_to_bottom` 关掉（`scrollChatToBottom()` 的唯一开关），再由本扩展按“是否在底部”决定跟不跟；关掉本功能会把酒馆原来的值恢复。
+
+实测（军训14天，5 条消息，`#chat` 可滚动 11372px）：
+
+| 操作 | 结果 |
+| --- | --- |
+| 滚到 2000，调用酒馆 `scrollChatToBottom()` | 仍在 2000 ✅ |
+| 滚到 2000，发 `MESSAGE_SENT` | 仍在 2000 ✅ |
+| 在底部，追加内容 + `MESSAGE_RECEIVED` | 跟到新的底部 11425 ✅ |
+| 滚到 800，追加内容 + `MESSAGE_SENT` | 仍在 800 ✅ |
+| 关掉开关后再调 `scrollChatToBottom()` | 正常跳到底部（恢复酒馆行为）✅ |
+
 ## 默认值（v2.0.6 起）
 
 | 设置 | 默认 | 理由 |

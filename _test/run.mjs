@@ -370,6 +370,10 @@ oaiStub.live.prompt_order[0].order[0].enabled = false;
 const pickChanged = pl.captureForCard(oaiStub, 'alice.png', 'PICK');
 ok('用户改过时取活状态', pickChanged[0].order[0].enabled === false, JSON.stringify(pickChanged[0].order[0]));
 
+// ===== 阅读位置锁定 =====
+ok('默认开启阅读位置锁定', pl.DEFAULTS.keepPosition === true);
+ok('无 #chat 时视为在底部', pl.computeAtBottom() === true);
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');

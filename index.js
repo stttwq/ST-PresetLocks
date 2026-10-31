@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.2.5'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.2.8'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -29,6 +29,8 @@ const DEFAULTS = {
     deleteWorldWithCard: true,
     // 实测：聊天已在屏幕上时只有重绘才能得到正确的旧消息显示，所以默认开
     rerenderOnSwitch: true,
+    // 发消息/生成都不抢滚动位置（阅读体验优先）
+    keepPosition: true,
 };
 
 /** 推荐默认值的版本号，用于升级时只迁移一次。 */
@@ -1222,6 +1224,14 @@ function injectEditorRow() {
                     <span class="pl-name">切换后重绘旧消息</span>
                 </label>
             </div>
+            <div class="pl-line">
+                <label class="pl-line" style="flex:1 1 auto" title="发消息与生成都不会自动跳到底部，固定在你正在看的位置">
+                    <input type="checkbox" id="pl_keep_position">
+                    <span class="pl-name">阅读位置锁定</span>
+                    <span class="pl-stat" id="pl_keep_info"></span>
+                </label>
+                <span class="pl-ghost" id="pl_go_bottom" title="滚到最新一条">回到底部</span>
+            </div>
         </div>`;
     anchor.parentElement.insertBefore(row, anchor);
 
@@ -1246,6 +1256,15 @@ function injectEditorRow() {
         settings().module.rerenderOnSwitch = e.target.checked;
         saveSettings();
     });
+    row.querySelector('#pl_keep_position').addEventListener('change', async (e) => {
+        settings().module.keepPosition = e.target.checked;
+        saveSettings();
+        await applyKeepPosition();
+        atBottom = computeAtBottom();
+        refreshEditorRow(true);
+        toast(e.target.checked ? '已开启：发消息/生成不再跳到底部' : '已恢复酒馆默认滚动行为', 'success', true);
+    });
+    row.querySelector('#pl_go_bottom').addEventListener('click', () => scrollToBottomNow(true));
     row.querySelector('#world_lock_search').addEventListener('input', () => refreshWorldResults());
     row.querySelector('#world_lock_list').addEventListener('click', (e) => onWorldAction(e));
     row.querySelector('#world_lock_results').addEventListener('click', (e) => onWorldAdd(e));
@@ -1534,6 +1553,7 @@ function startEditorWatch() {
 function startTicker() {
     if (editorTimer) return;
     editorTimer = setInterval(() => {
+        attachChatScroll();
         if (document.hidden) return; // 后台标签页不干活
         if (!panelOpen()) {
             stopTicker();
@@ -1613,6 +1633,14 @@ function refreshEditorRow(force = false) {
 
     const rerender = document.getElementById('pl_rerender');
     if (rerender) rerender.checked = !!settings().module.rerenderOnSwitch;
+
+    const keep = document.getElementById('pl_keep_position');
+    if (keep) keep.checked = !!settings().module.keepPosition;
+    const keepInfo = document.getElementById('pl_keep_info');
+    if (keepInfo) {
+        keepInfo.textContent = settings().module.keepPosition ? (computeAtBottom() ? '底部跟随' : '已锁定位置') : '';
+        keepInfo.title = '开启后：只有你本来就在底部时才会跟随新消息；往上翻看过旧内容时不会被拽下去';
+    }
 
     const connOn = !!lock?.enable?.connection;
     const cbConn = document.getElementById('pl_enable_connection');
@@ -1834,6 +1862,115 @@ function flash(el, text, ms = 1600) {
     }, ms);
 }
 
+// ===== 阅读位置锁定（发消息/生成都不抢镜头） =====
+
+let keepPositionWired = false;
+let atBottom = true;
+let originalAutoScroll = null;
+
+function chatEl() {
+    return document.getElementById('chat');
+}
+
+function computeAtBottom() {
+    const el = chatEl();
+    if (!el) return true;
+    return el.scrollHeight - el.clientHeight - el.scrollTop < 40;
+}
+
+function scrollToBottomNow(smooth = false) {
+    const el = chatEl();
+    if (!el) return;
+    try {
+        el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+    } catch {
+        el.scrollTop = el.scrollHeight;
+    }
+    atBottom = true;
+}
+
+/**
+ * 酒馆自己的 `scrollChatToBottom()` 已经被 `power_user.auto_scroll_chat_to_bottom` 把关。
+ * 把它关掉，所有「发消息/生成/流式」的自动跳底就全停了；
+ * 然后由我们自己补一条：只有你本来就在底部时才跟随到底，否则你的位置一直不动。
+ * 关闭本功能时会把酒馆原来那个值恢复回去。
+ */
+async function applyKeepPosition() {
+    const want = !!settings().module.keepPosition;
+    try {
+        const pu = await import('../../../power-user.js');
+        const power = pu?.power_user;
+        if (!power) return false;
+        if (want) {
+            if (originalAutoScroll === null) originalAutoScroll = power.auto_scroll_chat_to_bottom !== false;
+            power.auto_scroll_chat_to_bottom = false;
+        } else if (originalAutoScroll !== null) {
+            power.auto_scroll_chat_to_bottom = originalAutoScroll;
+            originalAutoScroll = null;
+        }
+        return true;
+    } catch (error) {
+        console.warn(`${LOG} 调整酒馆自动滚动开关失败:`, error);
+        return false;
+    }
+}
+
+/** 滚动监听直接挂在 #chat 上：scroll 事件不会冒泡，仰赖 document 捕获不可靠。 */
+function attachChatScroll() {
+    const el = chatEl();
+    if (!el) return false;
+    if (el.__plScrollBound) return true;
+    el.__plScrollBound = true;
+    el.addEventListener(
+        'scroll',
+        () => {
+            atBottom = computeAtBottom();
+        },
+        { passive: true },
+    );
+    atBottom = computeAtBottom();
+    return true;
+}
+
+function wireKeepPosition() {
+    if (keepPositionWired) return;
+    keepPositionWired = true;
+
+    document.addEventListener(
+        'scroll',
+        (event) => {
+            if (event.target && event.target.id === 'chat') atBottom = computeAtBottom();
+        },
+        { passive: true, capture: true },
+    );
+    attachChatScroll();
+
+    const follow = () => {
+        if (!settings().module.keepPosition) return;
+        if (!atBottom) return; // 人离开了底部就一直别拽他
+        // 不用 requestAnimationFrame：后台标签页里它可能被节流，导致“在底部也不跟随”
+        scrollToBottomNow();
+        setTimeout(() => {
+            if (atBottom) scrollToBottomNow();
+        }, 80);
+        setTimeout(() => {
+            if (atBottom) scrollToBottomNow();
+        }, 300);
+    };
+
+    eventSource.on(event_types.MESSAGE_SENT, follow);
+    eventSource.on(event_types.MESSAGE_RECEIVED, follow);
+
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        atBottom = true;
+        attachChatScroll();
+        if (!settings().module.keepPosition) return;
+        setTimeout(() => {
+            if (atBottom) scrollToBottomNow();
+        }, 200);
+    });
+}
+
 // ===== 面板 =====
 
 function fmtClock(at) {
@@ -2003,6 +2140,8 @@ function init() {
     installDeleteHook();
     installConnectionGuard();
     installKeyCapture();
+    wireKeepPosition();
+    applyKeepPosition();
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次
     onContextChanged();
