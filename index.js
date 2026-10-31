@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.3.4'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.5'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -1619,7 +1619,7 @@ function startTicker() {
     editorTimer = setInterval(() => {
         attachChatScroll();
         injectDecisionBar();
-        refreshDecisionBar();
+        if (!isGenerating) refreshDecisionBar();
         if (document.hidden) return; // 后台标签页不干活
         if (!panelOpen()) {
             stopTicker();
@@ -2107,6 +2107,7 @@ function wireKeepPosition() {
 
 let decisionSig = '';
 let decisionWired = false;
+let isGenerating = false;
 
 function stripTags(input) {
     return String(input || '')
@@ -2238,6 +2239,10 @@ function refreshDecisionBar(force = false) {
         return;
     }
 
+    // 生成中消息是半成品（选项/梗概还在陆续吐），此时重建会让面板里内容逐字跳动。
+    // 冻结在上一轮的完整结果，等生成结束再一次性更新。
+    if (isGenerating && !force) return;
+
     const text = latestAiMessage();
     if (!text) {
         bar.style.display = 'none';
@@ -2314,16 +2319,41 @@ function onDecisionClick(event) {
     toast('已填入输入框，可直接改再发', 'success', true);
 }
 
+/** 供测试：设置/读取生成中状态。 */
+function setGenerating(v) {
+    isGenerating = !!v;
+}
+
+function isGeneratingNow() {
+    return isGenerating;
+}
+
 function wireDecisionBar() {
     if (decisionWired) return;
     decisionWired = true;
 
-    const wake = () => refreshDecisionBar(true);
+    const wake = () => {
+        isGenerating = false;
+        refreshDecisionBar(true);
+    };
     eventSource.on(event_types.MESSAGE_RECEIVED, wake);
-    if (event_types.GENERATION_ENDED) eventSource.on(event_types.GENERATION_ENDED, wake);
+    if (event_types.GENERATION_STARTED) {
+        eventSource.on(event_types.GENERATION_STARTED, () => {
+            isGenerating = true;
+        });
+    }
+    if (event_types.GENERATION_ENDED) {
+        eventSource.on(event_types.GENERATION_ENDED, () => {
+            isGenerating = false;
+            refreshDecisionBar(true);
+        });
+    }
     if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, wake);
     if (event_types.MESSAGE_SWIPE_DELETED) eventSource.on(event_types.MESSAGE_SWIPE_DELETED, wake);
-    eventSource.on(event_types.CHAT_CHANGED, wake);
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        isGenerating = false; // 换聊天时重置，避免卡在“生成中”
+        refreshDecisionBar(true);
+    });
 
     // 点面板外面收起（但点选项、点 FAB 不算）
     document.addEventListener(
