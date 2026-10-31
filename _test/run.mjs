@@ -373,6 +373,7 @@ ok('用户改过时取活状态', pickChanged[0].order[0].enabled === false, JSO
 // ===== 阅读位置锁定 =====
 ok('默认开启阅读位置锁定', pl.DEFAULTS.keepPosition === true);
 ok('无 #chat 时视为在底部', pl.computeAtBottom() === true);
+ok('刚标记用户意图算「近期有操作」', (pl.markUserIntent(), pl.userIntentRecent()) === true);
 
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;

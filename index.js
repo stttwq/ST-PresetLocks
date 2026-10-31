@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.2.9'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.0'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -1902,6 +1902,12 @@ function flash(el, text, ms = 1600) {
 let keepPositionWired = false;
 let atBottom = true;
 let originalAutoScroll = null;
+let lastScrollTop = 0;
+/** 用户最后一次「主动」操作（滚轮/触摸/翻页键）的时间戳。 */
+let userIntentAt = 0;
+/** 用户意图锁窗口：这段时间内任何自动滚动都不做。 */
+const INTENT_LOCK_MS = 1500;
+let followTimer = null;
 
 function chatEl() {
     return document.getElementById('chat');
@@ -1910,7 +1916,16 @@ function chatEl() {
 function computeAtBottom() {
     const el = chatEl();
     if (!el) return true;
-    return el.scrollHeight - el.clientHeight - el.scrollTop < 40;
+    return el.scrollHeight - el.clientHeight - el.scrollTop < 4;
+}
+
+function userIntentRecent() {
+    return Date.now() - userIntentAt < INTENT_LOCK_MS;
+}
+
+/** 用户主动操作：滚轮、触摸、翻页键、在聊天区按下鼠标。 */
+function markUserIntent() {
+    userIntentAt = Date.now();
 }
 
 function scrollToBottomNow(smooth = false) {
@@ -1922,13 +1937,13 @@ function scrollToBottomNow(smooth = false) {
         el.scrollTop = el.scrollHeight;
     }
     atBottom = true;
+    lastScrollTop = el.scrollTop;
 }
 
 /**
- * 酒馆自己的 `scrollChatToBottom()` 已经被 `power_user.auto_scroll_chat_to_bottom` 把关。
+ * 洒馆的 `scrollChatToBottom()` 已经被 `power_user.auto_scroll_chat_to_bottom` 把关。
  * 把它关掉，所有「发消息/生成/流式」的自动跳底就全停了；
- * 然后由我们自己补一条：只有你本来就在底部时才跟随到底，否则你的位置一直不动。
- * 关闭本功能时会把酒馆原来那个值恢复回去。
+ * 然后由我们自己补一条：只在你本来就在底部、且近期没主动上滑时才跟随。
  */
 async function applyKeepPosition() {
     const want = !!settings().module.keepPosition;
@@ -1950,55 +1965,95 @@ async function applyKeepPosition() {
     }
 }
 
-/** 滚动监听直接挂在 #chat 上：scroll 事件不会冒泡，仰赖 document 捕获不可靠。 */
+/**
+ * 滚动监听：用「方向」判定而不是距离阈值。
+ * 只要 scrollTop 变小（哪怕 1px）就视为你离开了底部；真正到底才恢复跟随。
+ */
 function attachChatScroll() {
     const el = chatEl();
     if (!el) return false;
     if (el.__plScrollBound) return true;
     el.__plScrollBound = true;
+    lastScrollTop = el.scrollTop;
+    atBottom = computeAtBottom();
     el.addEventListener(
         'scroll',
         () => {
-            atBottom = computeAtBottom();
+            const top = el.scrollTop;
+            const movedUp = top < lastScrollTop - 0.5;
+            lastScrollTop = top;
+            const bottom = computeAtBottom();
+            // 向上滚动 = 明确在看旧内容，立即锁定
+            atBottom = movedUp ? false : bottom;
+            if (!atBottom) setFollowTimer(false);
         },
         { passive: true },
     );
-    atBottom = computeAtBottom();
     return true;
+}
+
+/** 生成中的轻量跟随：250ms 一次，只在底部且无用户意图时动。 */
+function setFollowTimer(on, ms = 250) {
+    if (followTimer) {
+        clearInterval(followTimer);
+        followTimer = null;
+    }
+    if (!on) return;
+    followTimer = setInterval(() => {
+        if (!settings().module.keepPosition || !atBottom || userIntentRecent()) return;
+        scrollToBottomNow();
+    }, ms);
+}
+
+/** 新内容出现的那一刻调一次：只在底部且无用户意图时跟随。 */
+function followOnce() {
+    if (!settings().module.keepPosition) return;
+    if (!atBottom || userIntentRecent()) return;
+    scrollToBottomNow();
+    setTimeout(() => {
+        if (atBottom && !userIntentRecent()) scrollToBottomNow();
+    }, 80);
 }
 
 function wireKeepPosition() {
     if (keepPositionWired) return;
     keepPositionWired = true;
 
-    document.addEventListener(
-        'scroll',
-        (event) => {
-            if (event.target && event.target.id === 'chat') atBottom = computeAtBottom();
-        },
-        { passive: true, capture: true },
-    );
     attachChatScroll();
 
-    const follow = () => {
-        if (!settings().module.keepPosition) return;
-        if (!atBottom) return; // 人离开了底部就一直别拽他
-        // 不用 requestAnimationFrame：后台标签页里它可能被节流，导致“在底部也不跟随”
-        scrollToBottomNow();
-        setTimeout(() => {
-            if (atBottom) scrollToBottomNow();
-        }, 80);
-        setTimeout(() => {
-            if (atBottom) scrollToBottomNow();
-        }, 300);
-    };
+    // 用户主动操作的三个入口（比 scroll 事件可靠：程序滚动不会误判成用户操作）
+    for (const type of ['wheel', 'touchmove', 'keydown']) {
+        document.addEventListener(type, markUserIntent, { passive: true, capture: true });
+    }
+    const el = chatEl();
+    if (el) el.addEventListener('mousedown', markUserIntent, { passive: true });
 
-    eventSource.on(event_types.MESSAGE_SENT, follow);
-    eventSource.on(event_types.MESSAGE_RECEIVED, follow);
+    // 消息插入 DOM 的那一刻（酒馆的 MESSAGE_SENT 早于 addOneMessage，所以不能只靠事件）
+    const watchChat = () => {
+        const chat = chatEl();
+        if (!chat || chat.__plMutex) return;
+        chat.__plMutex = true;
+        new MutationObserver(() => {
+            if (settings().module.keepPosition) followOnce();
+        }).observe(chat, { childList: true });
+    };
+    watchChat();
+
+    eventSource.on(event_types.MESSAGE_SENT, followOnce);
+    eventSource.on(event_types.MESSAGE_RECEIVED, followOnce);
+    if (event_types.GENERATION_STARTED) eventSource.on(event_types.GENERATION_STARTED, () => setFollowTimer(true));
+    if (event_types.GENERATION_ENDED) {
+        eventSource.on(event_types.GENERATION_ENDED, () => {
+            setFollowTimer(false);
+            followOnce();
+        });
+    }
 
     eventSource.on(event_types.CHAT_CHANGED, () => {
         atBottom = true;
+        userIntentAt = 0;
         attachChatScroll();
+        watchChat();
         if (!settings().module.keepPosition) return;
         setTimeout(() => {
             if (atBottom) scrollToBottomNow();
