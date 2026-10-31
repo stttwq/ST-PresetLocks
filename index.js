@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.3.3'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.4'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -1177,7 +1177,7 @@ const PANEL_CSS = `
 
 /* 不占布局高度，也不自带任何背景：只留浮层本身 */
 #pl_decision { position: relative; height: 0; padding: 0; margin: 0; border: 0; background: none; flex: none; font-size: .86em; }
-#pl_dc_fab { position: absolute; right: 8px; bottom: 6px; cursor: pointer; user-select: none; padding: 2px 11px; border-radius: 999px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.9)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); opacity: .9; white-space: nowrap; font-size: .92em; }
+#pl_dc_fab { position: absolute; left: 50%; transform: translateX(-50%); bottom: 6px; cursor: pointer; user-select: none; padding: 2px 11px; border-radius: 999px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.9)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); opacity: .9; white-space: nowrap; font-size: .92em; }
 #pl_dc_fab:hover { opacity: 1; }
 #pl_dc_panel { display: none; position: absolute; left: 50%; transform: translateX(-50%); bottom: 38px; width: min(640px, calc(100vw - 24px)); max-height: min(62vh, 460px); overflow-y: auto; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-radius: 10px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.95)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 4000; }
 #pl_decision.pl-dc-open #pl_dc_panel { display: flex; }
