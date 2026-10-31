@@ -375,6 +375,50 @@ ok('默认开启阅读位置锁定', pl.DEFAULTS.keepPosition === true);
 ok('无 #chat 时视为在底部', pl.computeAtBottom() === true);
 ok('刚标记用户意图算「近期有操作」', (pl.markUserIntent(), pl.userIntentRecent()) === true);
 
+// ===== 决策条抽取（用两套真实预设的原文样例） =====
+const sampleA = `</game>
+<options>
+<option>📱 拿出黑莓手机给李诗慧发送指令，命她给穿戴好抹胸的温云芝套上迷彩服，送回操场继续军训</option>
+<option>😈 拨通文咏芳专车内的保密连线，在迈巴赫疾驰的途中，命她隔着丝袜汇报裙底精水渗透的面积</option>
+<option>😏 换上一身纯黑Kiton定制西服，吩咐套房管家备车，准备驱车前往市委大楼旁听常委会前的政法通气会</option>
+</options>
+<summary>
+2026年9月3日07:00至07:30，京州四季酒店、电影学院警务室与西山私宅。宁源下达指令由李诗慧亲自为温云芝穿戴抹胸。
+</summary>
+<comment>
+喵呼呼~！小猫之神把细节写完啦喵！草莓味小鱼干快快拿来喵呜~！
+</comment>`;
+
+const dA = pl.extractDecision(sampleA);
+ok('A 系抽出 3 个选项', dA.options.length === 3, String(dA.options.length));
+ok('A 系选项保留 emoji 并去标签', dA.options[0].startsWith('📱 拿出黑莓手机'), dA.options[0]);
+ok('A 系抽到梗概', dA.summary.includes('2026年9月3日07:00至07:30'), dA.summary.slice(0, 24));
+ok('A 系梗概不混入猫猫留言', !dA.summary.includes('草莓味小鱼干'), dA.summary.slice(-20));
+
+const sampleB = `<details><summary><font color="#87CEFA">🦊时间与地点</font></summary>▷2023年11月26日·星期天<br>▷日本东京-秋叶原</details>
+正文内容。
+<details><summary><font color="#FFFACD">总结</font></summary>
+本轮宁源在秋叶原巡视，发现了一处暗线。
+</details>
+<fox_selc>
+o(*￣▽￣*)o<font color="#FF4500">手继续揉着她的头，轻声说："好，我明天就带你去。"</font>
+(๑•̀ㅂ•́)و✧<font color="#00CED1">直接抱起她走向卧室。</font>
+</fox_selc>
+<fox_tip>
+唔～真好玩呢～
+</fox_tip>`;
+
+const dB = pl.extractDecision(sampleB);
+ok('B 系抽出 2 个选项', dB.options.length === 2, String(dB.options.length));
+ok('B 系选项保留颜文字去 <font>', dB.options[0].startsWith('o(*￣▽￣*)o手继续揉着她的头'), dB.options[0]);
+ok('B 系抽到总结而不是时间地点', dB.summary.includes('秋叶原巡视'), dB.summary.slice(0, 20));
+ok('B 系不把时间地点当梗概', !dB.summary.includes('星期天'), dB.summary);
+ok('B 系不把狐言当梗概', !dB.summary.includes('真好玩'), dB.summary);
+
+ok('无选项时返回空数组', pl.extractOptions('纯正文，没有选项').length === 0);
+ok('无梗概时返回空字符串', pl.extractSummary('纯正文') === '');
+ok('stripTags 去标签与压缩空白', pl.stripTags('<b>a</b>\n\n  b') === 'a b', pl.stripTags('<b>a</b>\n\n  b'));
+
 console.log(results.join('\n'));
 const failed = results.filter((x) => x.startsWith('FAIL')).length;
 console.log(failed ? `\n${failed} 项失败` : '\n全部通过');

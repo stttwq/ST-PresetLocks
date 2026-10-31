@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.3.0'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.1'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -31,6 +31,8 @@ const DEFAULTS = {
     rerenderOnSwitch: true,
     // 发消息/生成都不抢滚动位置（阅读体验优先）
     keepPosition: true,
+    // 输入框上方的剧情梗概 + 行动选项条
+    decisionBar: true,
 };
 
 /** 推荐默认值的版本号，用于升级时只迁移一次。 */
@@ -1172,6 +1174,13 @@ const PANEL_CSS = `
 #preset_locks_row .pl-mini { flex: none; width: 17px; height: 17px; line-height: 17px; text-align: center; border-radius: 4px; background: rgba(0,0,0,.22); cursor: pointer; font-size: .76em; user-select: none; margin-left: 2px; }
 #preset_locks_row .pl-mini:hover { background: rgba(255,255,255,.18); }
 #preset_locks_row .pl-ghost { flex: none; padding: 1px 8px; border-radius: 4px; background: rgba(0,0,0,.22); cursor: pointer; font-size: .8em; white-space: nowrap; }
+
+#pl_decision { display: flex; flex-direction: column; gap: 4px; padding: 4px 6px; margin: 0 0 2px; border-radius: 6px; background: rgba(0,0,0,.26); font-size: .86em; }
+#pl_decision .pl-dc-sum { opacity: .82; line-height: 1.35; cursor: pointer; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
+#pl_decision.pl-dc-expanded .pl-dc-sum { -webkit-line-clamp: unset; display: block; }
+#pl_decision .pl-dc-btns { display: flex; flex-wrap: wrap; gap: 4px; }
+#pl_decision .pl-dc-btn { flex: 1 1 30%; min-width: 120px; padding: 3px 8px; border-radius: 5px; background: rgba(255,255,255,.09); cursor: pointer; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#pl_decision .pl-dc-btn:hover { background: rgba(255,255,255,.2); }
 #preset_locks_row .pl-ghost:hover { background: rgba(255,255,255,.18); }
 #preset_locks_row .pl-list { max-height: 78px; overflow: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
 #preset_locks_row .pl-results { max-height: 72px; overflow: auto; display: flex; flex-direction: column; gap: 1px; padding-right: 2px; }
@@ -1249,6 +1258,13 @@ function injectEditorRow() {
                 </label>
             </div>
             <div class="pl-line">
+                <label class="pl-line" style="flex:1 1 auto" title="在输入框上方显示最新一楼的剧情梗概与行动选项，点一下就填进输入框">
+                    <input type="checkbox" id="pl_decision_bar">
+                    <span class="pl-name">决策条（梗概 + 选项）</span>
+                    <span class="pl-stat" id="pl_dc_info"></span>
+                </label>
+            </div>
+            <div class="pl-line">
                 <label class="pl-line" style="flex:1 1 auto" title="发消息与生成都不会自动跳到底部，固定在你正在看的位置">
                     <input type="checkbox" id="pl_keep_position">
                     <span class="pl-name">阅读位置锁定</span>
@@ -1297,6 +1313,11 @@ function injectEditorRow() {
         toast(e.target.checked ? '已开启：发消息/生成不再跳到底部' : '已恢复酒馆默认滚动行为', 'success', true);
     });
     row.querySelector('#pl_go_bottom').addEventListener('click', () => scrollToBottomNow(true));
+    row.querySelector('#pl_decision_bar').addEventListener('change', (e) => {
+        settings().module.decisionBar = e.target.checked;
+        saveSettings();
+        refreshDecisionBar(true);
+    });
     row.querySelector('#world_lock_search').addEventListener('input', () => refreshWorldResults());
     row.querySelector('#world_lock_list').addEventListener('click', (e) => onWorldAction(e));
     row.querySelector('#world_lock_results').addEventListener('click', (e) => onWorldAdd(e));
@@ -1586,6 +1607,8 @@ function startTicker() {
     if (editorTimer) return;
     editorTimer = setInterval(() => {
         attachChatScroll();
+        injectDecisionBar();
+        refreshDecisionBar();
         if (document.hidden) return; // 后台标签页不干活
         if (!panelOpen()) {
             stopTicker();
@@ -1668,6 +1691,14 @@ function refreshEditorRow(force = false) {
 
     const keep = document.getElementById('pl_keep_position');
     if (keep) keep.checked = !!settings().module.keepPosition;
+
+    const dcBar = document.getElementById('pl_decision_bar');
+    if (dcBar) dcBar.checked = !!settings().module.decisionBar;
+    const dcInfo = document.getElementById('pl_dc_info');
+    if (dcInfo) {
+        const d = extractDecision(latestAiMessage());
+        dcInfo.textContent = d.summary || d.options.length ? `${d.options.length} 个选项` : '';
+    }
     const keepInfo = document.getElementById('pl_keep_info');
     if (keepInfo) {
         keepInfo.textContent = settings().module.keepPosition ? (computeAtBottom() ? '底部跟随' : '已锁定位置') : '';
@@ -2061,6 +2092,191 @@ function wireKeepPosition() {
     });
 }
 
+// ===== 决策条（从最新一楼抽取剧情梗概 + 行动选项） =====
+
+let decisionSig = '';
+let decisionWired = false;
+
+function stripTags(input) {
+    return String(input || '')
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/<[^>]+>/g, '')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&amp;/g, '&')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+/**
+ * 从一条消息原文里抽取选项。
+ * A 系：<options><option>…</option></options>
+ * B 系：<fox_selc> 里每行一个选项（常带颜文字 + <font color>）
+ */
+function extractOptions(text) {
+    const raw = String(text || '');
+    const a = [...raw.matchAll(/<option[^>]*>([\s\S]*?)<\/option>/gi)];
+    if (a.length) return a.map((m) => stripTags(m[1])).filter(Boolean);
+
+    const b = /<fox_selc[^>]*>([\s\S]*?)<\/fox_selc>/i.exec(raw);
+    if (b) {
+        return b[1]
+            .split(/\r?\n|<br\s*\/?>/i)
+            .map((line) => stripTags(line))
+            .filter(Boolean);
+    }
+    return [];
+}
+
+/**
+ * 抽取剧情梗概。
+ * 先剥掉留言与吐槽块（它们也占用 <summary> / 会污染文本），
+ * A 系是裸 <summary>，B 系是 <details><summary>含「总结」</summary>正文</details>。
+ */
+function extractSummary(text) {
+    let t = String(text || '')
+        .replace(/<comment[^>]*>[\s\S]*?<\/comment>/gi, '')
+        .replace(/<fox_tip[^>]*>[\s\S]*?<\/fox_tip>/gi, '')
+        .replace(/<fox[^>]*>[\s\S]*?<\/fox>/gi, '');
+
+    const noDetails = t.replace(/<details[^>]*>[\s\S]*?<\/details>/gi, '');
+    const bare = /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(noDetails);
+    if (bare) {
+        const s = stripTags(bare[1]);
+        if (s) return s;
+    }
+
+    for (const d of t.matchAll(/<details[^>]*>([\s\S]*?)<\/details>/gi)) {
+        const body = d[1];
+        const sm = /<summary[^>]*>([\s\S]*?)<\/summary>/i.exec(body);
+        if (!sm) continue;
+        if (!/总结|summary|梗概|小结/i.test(stripTags(sm[1]))) continue;
+        const s = stripTags(body.replace(/<summary[^>]*>[\s\S]*?<\/summary>/i, ''));
+        if (s) return s;
+    }
+    return '';
+}
+
+/** 从一条消息里同时取梗概与选项。 */
+function extractDecision(text) {
+    return { summary: extractSummary(text), options: extractOptions(text) };
+}
+
+/** 取最新一条 AI 楼层的原文（直接从 chat 数据，不解析 DOM，不会被打架）。 */
+function latestAiMessage() {
+    const chat = getContext()?.chat;
+    if (!Array.isArray(chat) || !chat.length) return '';
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const m = chat[i];
+        if (!m || m.is_user || m.is_system) continue;
+        return String(m.mes || '');
+    }
+    return '';
+}
+
+function injectDecisionBar() {
+    if (document.getElementById('pl_decision')) return true;
+    const anchor = document.getElementById('send_form');
+    if (!anchor || !anchor.parentElement) return false;
+
+    const bar = document.createElement('div');
+    bar.id = 'pl_decision';
+    bar.style.display = 'none';
+    bar.innerHTML = `
+        <div class="pl-dc-sum" id="pl_dc_sum"></div>
+        <div class="pl-dc-btns" id="pl_dc_btns"></div>`;
+    anchor.parentElement.insertBefore(bar, anchor);
+
+    bar.querySelector('#pl_dc_sum').addEventListener('click', () => bar.classList.toggle('pl-dc-expanded'));
+    bar.querySelector('#pl_dc_btns').addEventListener('click', (event) => onDecisionClick(event));
+    return true;
+}
+
+/** 按最新一楼重建决策条；内容没变就不碰 DOM。 */
+function refreshDecisionBar(force = false) {
+    const bar = document.getElementById('pl_decision');
+    if (!bar) return;
+
+    if (!settings().module.decisionBar) {
+        bar.style.display = 'none';
+        decisionSig = '';
+        return;
+    }
+
+    const text = latestAiMessage();
+    if (!text) {
+        bar.style.display = 'none';
+        decisionSig = '';
+        return;
+    }
+
+    const sig = `${text.length}|${text.slice(-40)}`;
+    if (!force && sig === decisionSig) {
+        return;
+    }
+    decisionSig = sig;
+
+    const { summary, options } = extractDecision(text);
+    const sumEl = bar.querySelector('#pl_dc_sum');
+    const btnsEl = bar.querySelector('#pl_dc_btns');
+
+    if (!summary && !options.length) {
+        bar.style.display = 'none';
+        return;
+    }
+
+    bar.style.display = 'flex';
+    if (sumEl) {
+        sumEl.textContent = summary || '';
+        sumEl.title = summary || '';
+        sumEl.style.display = summary ? '' : 'none';
+    }
+    if (btnsEl) {
+        btnsEl.replaceChildren();
+        options.forEach((opt, i) => {
+            const btn = document.createElement('div');
+            btn.className = 'pl-dc-btn';
+            btn.dataset.idx = String(i);
+            btn.textContent = opt.length > 42 ? `${opt.slice(0, 42)}…` : opt;
+            btn.title = opt;
+            btnsEl.append(btn);
+        });
+        btnsEl.style.display = options.length ? '' : 'none';
+    }
+}
+
+/** 点选项 → 去掉开头的表情/颜文字，填进输入框（可再改）。 */
+function onDecisionClick(event) {
+    const btn = event.target?.closest?.('.pl-dc-btn');
+    if (!btn) return;
+    const text = latestAiMessage();
+    const options = extractOptions(text);
+    const picked = options[Number(btn.dataset.idx)];
+    if (!picked) return;
+
+    const ta = document.getElementById('send_textarea');
+    if (!ta) return;
+    ta.value = picked;
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    ta.focus();
+    toast('已填入输入框，可直接改再发', 'success', true);
+}
+
+function wireDecisionBar() {
+    if (decisionWired) return;
+    decisionWired = true;
+
+    const wake = () => refreshDecisionBar(true);
+    eventSource.on(event_types.MESSAGE_RECEIVED, wake);
+    if (event_types.GENERATION_ENDED) eventSource.on(event_types.GENERATION_ENDED, wake);
+    if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, wake);
+    if (event_types.MESSAGE_SWIPE_DELETED) eventSource.on(event_types.MESSAGE_SWIPE_DELETED, wake);
+    eventSource.on(event_types.CHAT_CHANGED, wake);
+}
+
 // ===== 面板 =====
 
 function fmtClock(at) {
@@ -2232,6 +2448,9 @@ function init() {
     installKeyCapture();
     wireKeepPosition();
     applyKeepPosition();
+    wireDecisionBar();
+    injectDecisionBar();
+    refreshDecisionBar(true);
     if (!settings().baseline) captureBaseline();
 
     // 页面加载时 CHAT_CHANGED 可能早于本扩展注册，补跑一次
