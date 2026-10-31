@@ -15,7 +15,7 @@ import { getPresetManager } from '../../../preset-manager.js';
 
 const MODULE = 'PresetLocks';
 const LOG = '[预设锁定]';
-const VERSION = '2.3.2'; // 与 manifest.json 同步（测试会校）
+const VERSION = '2.3.3'; // 与 manifest.json 同步（测试会校）
 const CARD_KEY = 'presetLocks';
 const WORLD_KEY = 'world'; // 酒馆原生字段 data.extensions.world（第一本）
 const WORLDS_KEY = 'worldBooks'; // 本扩展：多本世界书列表
@@ -1175,19 +1175,20 @@ const PANEL_CSS = `
 #preset_locks_row .pl-mini:hover { background: rgba(255,255,255,.18); }
 #preset_locks_row .pl-ghost { flex: none; padding: 1px 8px; border-radius: 4px; background: rgba(0,0,0,.22); cursor: pointer; font-size: .8em; white-space: nowrap; }
 
-#pl_decision { position: relative; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; padding: 0 6px 3px; font-size: .86em; flex: none; }
-#pl_dc_fab { cursor: pointer; user-select: none; padding: 3px 12px; border-radius: 999px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.9)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); opacity: .92; white-space: nowrap; }
+/* 不占布局高度，也不自带任何背景：只留浮层本身 */
+#pl_decision { position: relative; height: 0; padding: 0; margin: 0; border: 0; background: none; flex: none; font-size: .86em; }
+#pl_dc_fab { position: absolute; right: 8px; bottom: 6px; cursor: pointer; user-select: none; padding: 2px 11px; border-radius: 999px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.9)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); opacity: .9; white-space: nowrap; font-size: .92em; }
 #pl_dc_fab:hover { opacity: 1; }
-#pl_dc_panel { display: none; position: absolute; right: 6px; bottom: calc(100% + 4px); width: min(640px, calc(100vw - 24px)); max-height: min(62vh, 460px); overflow-y: auto; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-radius: 10px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.95)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 4000; }
+#pl_dc_panel { display: none; position: absolute; left: 50%; transform: translateX(-50%); bottom: 38px; width: min(640px, calc(100vw - 24px)); max-height: min(62vh, 460px); overflow-y: auto; flex-direction: column; gap: 6px; padding: 8px 10px 10px; border-radius: 10px; background-color: var(--SmartThemeBlurTintColor, rgba(40,40,40,.95)); color: var(--SmartThemeBodyColor, inherit); border: 1px solid var(--SmartThemeBorderColor, rgba(128,128,128,.45)); backdrop-filter: blur(var(--SmartThemeBlurStrength, 10px)); box-shadow: 0 6px 24px rgba(0,0,0,.35); z-index: 4000; }
 #pl_decision.pl-dc-open #pl_dc_panel { display: flex; }
-#pl_dc_panel .pl-dc-head { display: flex; align-items: center; gap: 8px; font-size: .92em; opacity: .8; }
+#pl_dc_panel .pl-dc-head { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: .92em; opacity: .8; position: relative; }
 #pl_dc_panel .pl-dc-title { font-weight: 600; }
-#pl_dc_panel .pl-dc-meta { flex: 1 1 auto; opacity: .7; }
-#pl_dc_panel .pl-dc-x { cursor: pointer; padding: 0 4px; opacity: .7; flex: none; }
+#pl_dc_panel .pl-dc-meta { opacity: .7; }
+#pl_dc_panel .pl-dc-x { position: absolute; right: 0; top: 0; cursor: pointer; padding: 0 4px; opacity: .7; }
 #pl_dc_panel .pl-dc-x:hover { opacity: 1; }
 #pl_dc_panel .pl-dc-sum { line-height: 1.45; white-space: pre-wrap; word-break: break-word; padding: 6px 8px; border-radius: 6px; background: rgba(128,128,128,.12); }
 #pl_dc_panel .pl-dc-opts { display: flex; flex-direction: column; gap: 4px; }
-#pl_dc_panel .pl-dc-opt { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+#pl_dc_panel .pl-dc-opt { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
 #pl_dc_panel .pl-dc-opt:hover { background: rgba(128,128,128,.2); border-color: var(--SmartThemeBorderColor, rgba(128,128,128,.45)); }
 #pl_dc_panel .pl-dc-num { flex: none; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 4px; background: rgba(128,128,128,.22); font-size: .8em; }
 #pl_dc_panel .pl-dc-txt { flex: 1 1 auto; white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
